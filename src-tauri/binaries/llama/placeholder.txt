@@ -1,0 +1,1 @@
+placeholder - llama-server baixado por scripts/fetch-llama no CI (gitignored)

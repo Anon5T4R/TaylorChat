@@ -1,0 +1,55 @@
+[package]
+name = "taylorchat"
+version = "0.1.0"
+description = "TaylorChat — mensageiro P2P offline (sem servidor) com IA local"
+authors = ["Joao / Taylor"]
+edition = "2021"
+
+[lib]
+# O sufixo `_lib` evita conflito de nome lib×bin no Windows (cargo#8519).
+name = "taylorchat_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Identidade: par de chaves ed25519 (o mesmo tipo de chave que o iroh usa como NodeId).
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+# Segredo da identidade guardado no cofre do SO (DPAPI no Windows, Secret Service no Linux).
+keyring = { version = "3", features = ["windows-native", "sync-secret-service", "apple-native"] }
+# Cifra do histórico em repouso (Fase 4): AEAD sobre o corpo das mensagens, chave
+# derivada do segredo da identidade. Puro Rust — compila em toda plataforma.
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+# Compressão de anexos antes do envio (Fase 5, plano.md §5.6).
+zstd = "0.13"
+# Convite/QR de pareamento: gerado como SVG no back (front só renderiza).
+qrcode = "0.14"
+data-encoding = "2"
+
+# Rede P2P (iroh) fica atrás de uma feature: é dependência pesada e de API que
+# gira rápido. O build padrão (identidade + banco + pareamento + UI) compila sem
+# ela; a mensageria ao vivo entra com `--features p2p` (Fase 3, ver plano.md).
+# A parte async usa o runtime do próprio Tauri (tauri::async_runtime), então não
+# precisamos declarar tokio direto.
+iroh = { version = "0.35", optional = true }
+# Double ratchet (Fase 4): impl. Rust auditada do Olm/Megolm do Matrix (Apache-2.0,
+# compatível com nosso MIT). Só entra com a rede (transporte), então fica no p2p.
+vodozemac = { version = "0.8", optional = true }
+
+[features]
+default = []
+p2p = ["dep:iroh", "dep:vodozemac"]
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"

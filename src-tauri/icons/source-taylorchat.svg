@@ -1,0 +1,46 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#43c1b2"/>
+      <stop offset="1" stop-color="#2d8f84"/>
+    </linearGradient>
+    <linearGradient id="dots" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d8f84"/>
+      <stop offset="1" stop-color="#1f6b62"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#06302b" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- fundo (domínio mensageria = verde-água da suíte) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" fill="url(#bg)"/>
+
+  <!-- bolha de trás: dá a sensação de conversa (dois lados) -->
+  <rect x="330" y="250" width="470" height="330" rx="86" fill="#ffffff" opacity="0.34"/>
+
+  <!-- bolha principal + rabinho -->
+  <g filter="url(#soft)">
+    <path d="M250 350
+             h500 a110 110 0 0 1 110 110
+             v220 a110 110 0 0 1 -110 110
+             h-300
+             l-120 118
+             v-118
+             h-80 a110 110 0 0 1 -110 -110
+             v-220 a110 110 0 0 1 110 -110 z"
+          fill="#ffffff"/>
+  </g>
+
+  <!-- três pontos (mensagem / digitando) -->
+  <g fill="url(#dots)">
+    <circle cx="380" cy="570" r="46"/>
+    <circle cx="512" cy="570" r="46"/>
+    <circle cx="644" cy="570" r="46"/>
+  </g>
+
+  <!-- easter egg "Taylor" cursivo (bem discreto, canto inferior) -->
+  <text x="512" y="905" text-anchor="middle"
+        font-family="'Segoe Script','Brush Script MT',cursive"
+        font-size="120" font-style="italic" fill="#ffffff" opacity="0.5">Taylor</text>
+</svg>

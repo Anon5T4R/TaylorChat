@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            bundles: appimage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            build-essential \
+            curl wget file
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Baixar runtime de IA (llama.cpp) — Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-llama.ps1
+
+      - name: Baixar runtime de IA (llama.cpp) — Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/fetch-llama.sh
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "TaylorChat ${{ github.ref_name }}"
+          releaseBody: |
+            ## TaylorChat ${{ github.ref_name }}
+
+            Mensageiro P2P 100% offline: mensagens diretas entre pares, sem servidor, sem cadastro.
+            Identidade = uma chave; pareamento por QR/convite; IA local (llama.cpp / GGUF) opcional
+            pra redigir, resumir e traduzir.
+
+            ### Downloads
+            - **Windows — Instalador:** `*-setup.exe`
+            - **Linux — AppImage:** `*.AppImage` (dê permissão de execução e rode)
+
+            > **IA:** aponte para uma pasta com modelos `.gguf`. Modelos GGUF não inclusos.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          # p2p (rede iroh + double ratchet vodozemac) é a razão de existir do app,
+          # então a release sai COM a feature ligada.
+          args: --bundles ${{ matrix.bundles }} --features p2p
