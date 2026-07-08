@@ -511,6 +511,19 @@ pub fn conversations_summary(db: State<'_, Db>) -> Result<Vec<ConvoSummary>, Str
         .collect())
 }
 
+/// Conversas que têm alguma mensagem na fila (pra reenvio geral, todas de uma vez).
+pub fn queued_convos(db: &Db) -> Result<Vec<String>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT peer FROM messages WHERE direction='out' AND state='queued'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
 /// Mensagens de saída ainda na fila (decifradas) pra um par — pro reenvio.
 pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
     let raw: Vec<(i64, String, Vec<u8>, i64)> = with_conn!(db, conn, {

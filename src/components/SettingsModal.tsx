@@ -31,10 +31,18 @@ export function SettingsModal({
 }: Props) {
   const [audit, setAudit] = useState<api.AuditResult | null>(null);
   const [auditing, setAuditing] = useState(false);
+  const [net, setNet] = useState<api.NetStatus | null>(null);
+  const [log, setLog] = useState<string[]>([]);
+
+  const refreshDiag = () => {
+    api.netStatus().then(setNet).catch(() => {});
+    api.netLog().then(setLog).catch(() => {});
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
+    refreshDiag();
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
@@ -109,6 +117,25 @@ export function SettingsModal({
                 <code className="audit-digest">{grouped(audit.digest)}</code>
               </div>
             )}
+          </div>
+
+          <div className="set-audit">
+            <strong>{t("settings.diag")}</strong>
+            <div className="ai-row">
+              <span className={`ai-dot ${net?.up ? "on" : ""}`} />
+              <span className="hint">{net?.up ? t("settings.diagUp") : t("settings.diagDown")}</span>
+              <button className="btn" style={{ marginLeft: "auto" }} onClick={refreshDiag}>
+                ↻
+              </button>
+            </div>
+            {net && <code className="ai-dir">id: {net.nodeId}</code>}
+            <pre className="net-log">{log.join("\n") || "—"}</pre>
+            <button
+              className="btn"
+              onClick={() => navigator.clipboard.writeText(log.join("\n")).catch(() => {})}
+            >
+              {t("settings.diagCopy")}
+            </button>
           </div>
         </div>
       </div>

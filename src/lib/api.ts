@@ -66,6 +66,19 @@ export const threadDelete = (convo: string) => invoke<void>("thread_delete", { c
 
 /// Reenvia o que ficou na fila pra um par; devolve quantas saíram.
 export const resendQueued = (peer: string) => invoke<number>("resend_queued", { peer });
+/// Reenvia a fila de TODAS as conversas (chamado periodicamente).
+export const resendAll = () => invoke<number>("resend_all");
+
+// ── Diagnóstico de rede ──────────────────────────────────────────────────
+export interface NetStatus {
+  up: boolean;
+  nodeId: string;
+}
+export const netStatus = () => invoke<NetStatus>("net_status");
+export const netLog = () => invoke<string[]>("net_log");
+/// Avisos de rede em tempo real (falha ao enviar/receber, etc.).
+export const onNetError = (cb: (line: string) => void): Promise<UnlistenFn> =>
+  listen<string>("net-error", (e) => cb(e.payload));
 
 /// Abre um anexo salvo no app com o programa padrão do SO.
 export const openAttachment = (localPath: string) => openPath(localPath);

@@ -17,6 +17,41 @@
 //! testes (`ratchet.rs`, `media.rs`). Retomada de transferência (iroh-blobs) é upgrade
 //! futuro; este corte manda o arquivo inteiro pelo stream cifrado.
 
+// ── Diagnóstico de rede (o .exe esconde o stdout, então logamos pra UI) ─────────
+use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
+static NET_LOG: StdOnceLock<StdMutex<Vec<String>>> = StdOnceLock::new();
+
+fn now_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+}
+
+/// Registra um evento de rede no log em memória e (se `toast`) manda pra UI como aviso.
+pub fn report(app: &tauri::AppHandle, line: impl Into<String>, toast: bool) {
+    use tauri::Emitter;
+    let line = line.into();
+    eprintln!("[taylorchat] {line}");
+    let log = NET_LOG.get_or_init(|| StdMutex::new(Vec::new()));
+    if let Ok(mut v) = log.lock() {
+        v.push(format!("{} {line}", now_hms()));
+        let len = v.len();
+        if len > 200 {
+            v.drain(0..len - 200);
+        }
+    }
+    if toast {
+        let _ = app.emit("net-error", &line);
+    }
+}
+
+/// Log de rede recente (pro painel de diagnóstico nas Configurações).
+pub fn log_lines() -> Vec<String> {
+    NET_LOG.get().and_then(|m| m.lock().ok().map(|v| v.clone())).unwrap_or_default()
+}
+
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_MESSAGE_IN: &str = "message-in";
 /// Recibo de leitura recebido: a UI atualiza os ✓✓ da conversa.
@@ -50,6 +85,10 @@ pub async fn send_keyword(_app: &tauri::AppHandle, _peer: &str, _hash: &str) -> 
 #[cfg(not(feature = "p2p"))]
 pub async fn send_read(_app: &tauri::AppHandle, _peer: &str, _thread: &str) -> Result<(), String> {
     Ok(())
+}
+#[cfg(not(feature = "p2p"))]
+pub fn is_up() -> bool {
+    false
 }
 #[cfg(not(feature = "p2p"))]
 #[allow(clippy::too_many_arguments)]
@@ -111,6 +150,10 @@ mod imp {
             .map_err(|e| format!("base64 inválido: {e}"))
     }
 
+    pub fn is_up() -> bool {
+        ENDPOINT.get().is_some()
+    }
+
     pub fn start(app: tauri::AppHandle, secret: [u8; 32]) {
         let db = app.state::<Db>();
         let account = match crate::db::meta_get(&db, "olm_account") {
@@ -133,19 +176,20 @@ mod imp {
         }) {
             Ok(ep) => ep,
             Err(e) => {
-                eprintln!("[taylorchat] falha ao subir endpoint iroh: {e}");
+                super::report(&app, format!("falha ao subir a rede: {e}"), true);
                 return;
             }
         };
-        eprintln!("[taylorchat] endpoint iroh no ar — node {}", endpoint.node_id());
+        super::report(&app, format!("rede no ar — node {}", endpoint.node_id()), false);
 
         let ep_accept = endpoint.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(incoming) = ep_accept.accept().await {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    let app2 = app.clone();
                     if let Err(e) = handle_conn(app, incoming).await {
-                        eprintln!("[taylorchat] conexão de entrada falhou: {e}");
+                        super::report(&app2, format!("recepção falhou: {e}"), true);
                     }
                 });
             }
@@ -360,7 +404,7 @@ mod imp {
                 Err(_) => break,
             };
             if let Err(e) = handle_stream(&app, &peer_hex, &mut send_s, &mut recv_s).await {
-                eprintln!("[taylorchat] stream de entrada falhou: {e}");
+                super::report(&app, format!("stream de entrada: {e}"), true);
             }
         }
         Ok(())
@@ -551,4 +595,4 @@ mod imp {
 }
 
 #[cfg(feature = "p2p")]
-pub use imp::{send_file, send_keyword, send_read, send_text, start};
+pub use imp::{is_up, send_file, send_keyword, send_read, send_text, start};

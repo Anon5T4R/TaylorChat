@@ -10,7 +10,9 @@ mod ratchet;
 
 use std::sync::Mutex;
 use base64::Engine;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
 
 use db::{Db, Message};
 use identity::Identity;
@@ -19,6 +21,15 @@ use identity::Identity;
 #[tauri::command(async)]
 fn get_startup_file() -> Option<String> {
     None
+}
+
+/// Mostra/foca a janela principal (da bandeja ou de um 2º lançamento).
+fn open_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
 }
 
 /// Separa a chave de conversa em (node_id, thread). `node` (principal) ou
@@ -54,8 +65,8 @@ async fn send_message(
             msg.state = "delivered".into();
         }
         Err(e) => {
-            // fica na fila; nada de erro pro usuário — só log.
-            eprintln!("[taylorchat] envio adiado (fica na fila): {e}");
+            // fica na fila e reenvia depois; avisa a UI pra o usuário saber.
+            net::report(&app, format!("mensagem na fila (par offline?): {e}"), true);
         }
     }
     Ok(msg)
@@ -107,7 +118,7 @@ async fn attach_file(
             msg.state = "delivered".into();
         }
         Err(e) => {
-            eprintln!("[taylorchat] anexo adiado (fica na fila): {e}");
+            net::report(&app, format!("anexo na fila (par offline?): {e}"), true);
         }
     }
     Ok(msg)
@@ -129,8 +140,24 @@ async fn resend_queued(
     db: tauri::State<'_, Db>,
     peer: String,
 ) -> Result<u32, String> {
-    let (node, thread) = split_convo(&peer);
-    let queued = db::queued_out(&db, &peer)?;
+    do_resend(&app, &db, &peer).await
+}
+
+/// Reenvia a fila de TODAS as conversas (chamado periodicamente pela UI). Devolve o
+/// total que saiu.
+#[tauri::command]
+async fn resend_all(app: tauri::AppHandle, db: tauri::State<'_, Db>) -> Result<u32, String> {
+    let convos = db::queued_convos(&db)?;
+    let mut total = 0u32;
+    for convo in convos {
+        total += do_resend(&app, &db, &convo).await.unwrap_or(0);
+    }
+    Ok(total)
+}
+
+async fn do_resend(app: &tauri::AppHandle, db: &Db, peer: &str) -> Result<u32, String> {
+    let (node, thread) = split_convo(peer);
+    let queued = db::queued_out(db, peer)?;
     let mut sent = 0u32;
     for m in queued {
         let ok = if m.kind == "file" {
@@ -236,6 +263,25 @@ fn audit_conversation(
     db::audit_digest(&db, &peer, &id.node_id_hex(), node)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetStatus {
+    up: bool,
+    node_id: String,
+}
+
+/// Status da rede (endpoint no ar?) + meu node_id — pro diagnóstico.
+#[tauri::command(async)]
+fn net_status(id: tauri::State<'_, Identity>) -> NetStatus {
+    NetStatus { up: net::is_up(), node_id: id.node_id_hex() }
+}
+
+/// Log recente de eventos de rede (pro painel de diagnóstico).
+#[tauri::command(async)]
+fn net_log() -> Vec<String> {
+    net::log_lines()
+}
+
 /// Lista todos os stickers salvos (todos os pacotes).
 #[tauri::command(async)]
 fn stickers_list(app: tauri::AppHandle) -> Result<Vec<media::Sticker>, String> {
@@ -252,9 +298,7 @@ fn sticker_add(app: tauri::AppHandle, pack: String, src: String) -> Result<Strin
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_focus();
-            }
+            open_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -272,6 +316,43 @@ pub fn run() {
             db::init(app.handle(), &secret)?;
             // Rede P2P (no-op no build padrão; iroh com --features p2p).
             net::start(app.handle().clone(), secret);
+
+            // Bandeja do Windows: fechar a janela ESCONDE (o app segue rodando e
+            // recebendo); reabre pela bandeja. "Sair" encerra de verdade.
+            let show = MenuItem::with_id(app, "show", "Abrir TaylorChat", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let _tray = TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("TaylorChat")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => open_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        open_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -280,6 +361,9 @@ pub fn run() {
             attach_file,
             mark_read,
             resend_queued,
+            resend_all,
+            net_status,
+            net_log,
             set_keyword,
             keyword_status,
             audit_conversation,

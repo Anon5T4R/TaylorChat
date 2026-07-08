@@ -124,6 +124,19 @@ body {
 .me-id {
   color: var(--text);
 }
+.pair-cta {
+  margin: 8px;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.pair-cta:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .contacts {
   flex: 1;
   min-height: 0;
@@ -383,6 +396,20 @@ body {
   word-break: break-all;
   line-height: 1.7;
   color: var(--accent);
+}
+.net-log {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 140px;
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
 }
 .btn-ai {
   background: var(--bg-3);

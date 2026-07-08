@@ -54,6 +54,10 @@ export function Sidebar({
         </div>
       )}
 
+      <button className="pair-cta" onClick={onOpenPairing}>
+        ＋ {t("sidebar.pair")}
+      </button>
+
       <div className="contacts">
         {rows.length === 0 && (
           <div className="empty">

@@ -110,13 +110,28 @@ export default function App() {
     [loadMessages],
   );
 
-  // Reenvio periódico da fila da conversa aberta.
+  // Reenvio periódico da fila de TODAS as conversas + ao focar a janela (o que ficou
+  // pendente sai sozinho quando o par voltar/a rede subir). Recarrega se algo saiu.
   useEffect(() => {
-    const id = setInterval(() => {
-      const c = selectedRef.current;
-      if (c) flushQueue(c);
-    }, 25000);
-    return () => clearInterval(id);
+    const flushAll = () => {
+      api
+        .resendAll()
+        .then((n) => {
+          if (n > 0) {
+            reloadSummaries();
+            const c = selectedRef.current;
+            if (c) loadMessages(c);
+          }
+        })
+        .catch(() => {});
+    };
+    const id = setInterval(flushAll, 15000);
+    window.addEventListener("focus", flushAll);
+    flushAll();
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", flushAll);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -156,6 +171,7 @@ export default function App() {
           if (cur && splitConvo(cur).node === node) loadKw(node);
         }),
       );
+      unlisteners.push(await api.onNetError((line) => setError(line)));
       try {
         unlisteners.push(
           await getCurrentWebview().onDragDropEvent((event) => {
