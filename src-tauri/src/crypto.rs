@@ -20,6 +20,14 @@ pub fn derive_key(identity_secret: &[u8; 32]) -> [u8; 32] {
     okm
 }
 
+/// SHA-256 em hex. Usado no digest de auditoria e no hash da palavra-chave.
+pub fn hash_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Chave aleatória de 32 bytes (ex.: chave de uso único de um anexo).
 pub fn random_key() -> [u8; 32] {
     let mut k = [0u8; 32];

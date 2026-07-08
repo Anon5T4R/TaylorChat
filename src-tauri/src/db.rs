@@ -71,8 +71,11 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
          );",
     )
     .map_err(|e| format!("falha ao criar esquema: {e}"))?;
-    // Migração: coluna `kind` (bancos das Fases 1–4 não tinham). Ignora se já existe.
+    // Migrações (ignora se a coluna já existe).
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'", []);
+    // Palavra-chave por contato: `kw` = a minha (cifrada), `peer_kw_hash` = o hash que o par mandou.
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN kw BLOB", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN peer_kw_hash TEXT", []);
     let state = app.state::<Db>();
     *state.conn.lock().map_err(|_| "estado do banco corrompido")? = Some(conn);
     *state.key.lock().map_err(|_| "estado do banco corrompido")? =
@@ -191,8 +194,22 @@ pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, St
         .collect())
 }
 
+/// Garante que o par existe como contato (auto-salvar ao receber de alguém novo — sem
+/// isso a conversa ficaria invisível). Nome vazio = a UI mostra o id encurtado.
+pub fn contact_ensure(db: &Db, node_id: &str) -> Result<(), String> {
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO contacts(node_id, nickname, added_ts) VALUES(?1, '', ?2)",
+        rusqlite::params![node_id, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Insere uma mensagem (texto ou arquivo), cifrando o corpo em repouso, e devolve a
-/// linha com o corpo em claro pra UI. Base de `enqueue`/`record_incoming`/`record_file`.
+/// linha com o corpo em claro pra UI. `ts`: `None` gera agora (saída); `Some` usa o do
+/// remetente (entrada) — assim os dois lados guardam o MESMO ts (base da auditoria).
 fn insert_message(
     db: &Db,
     peer: &str,
@@ -200,8 +217,12 @@ fn insert_message(
     kind: &str,
     body: &str,
     state: &str,
+    ts: Option<i64>,
 ) -> Result<Message, String> {
-    let ts = now_ms();
+    if direction == "in" {
+        contact_ensure(db, peer)?; // auto-salva quem falou comigo
+    }
+    let ts = ts.unwrap_or_else(now_ms);
     let blob = enc_text(db, body)?;
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
     let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
@@ -224,8 +245,9 @@ fn insert_message(
 }
 
 /// Persiste uma mensagem de texto de saída como `queued` e devolve a linha pra UI.
+/// O `ts` gerado aqui é transmitido ao par (ver lib::send_message).
 pub fn enqueue(db: &Db, peer: &str, body: &str) -> Result<Message, String> {
-    insert_message(db, peer, "out", "text", body, "queued")
+    insert_message(db, peer, "out", "text", body, "queued", None)
 }
 
 /// Registra uma mensagem de arquivo (metadados JSON em `body`, `kind='file'`).
@@ -235,8 +257,9 @@ pub fn record_file(
     direction: &str,
     meta_json: &str,
     state: &str,
+    ts: Option<i64>,
 ) -> Result<Message, String> {
-    insert_message(db, peer, direction, "file", meta_json, state)
+    insert_message(db, peer, direction, "file", meta_json, state, ts)
 }
 
 /// Atualiza o estado de uma mensagem (queued→sent→delivered→read). Não-comando.
@@ -248,15 +271,134 @@ pub fn set_state(db: &Db, id: i64, state: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Registra uma mensagem de texto recebida já em claro (a rede decifrou pelo ratchet).
+/// Registra uma mensagem de texto recebida já em claro (a rede decifrou pelo ratchet),
+/// usando o `ts` do remetente pra os dois lados baterem na auditoria.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
-pub fn record_incoming(db: &Db, peer: &str, plaintext: &str) -> Result<Message, String> {
-    insert_message(db, peer, "in", "text", plaintext, "received")
+pub fn record_incoming(db: &Db, peer: &str, plaintext: &str, ts: i64) -> Result<Message, String> {
+    insert_message(db, peer, "in", "text", plaintext, "received", Some(ts))
 }
 
 #[tauri::command(async)]
 pub fn message_set_state(db: State<'_, Db>, id: i64, state: String) -> Result<(), String> {
     set_state(&db, id, &state)
+}
+
+/// Apaga o histórico de mensagens de um contato (o contato permanece). Decisão do
+/// usuário — some da auditoria também, por design.
+#[tauri::command(async)]
+pub fn clear_conversation(db: State<'_, Db>, peer: String) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute("DELETE FROM messages WHERE peer=?1", rusqlite::params![peer])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+// ── Palavra-chave por contato (verificação humana anti-MITM) ───────────────────
+/// Guarda a MINHA palavra-chave (cifrada em repouso) pra um contato.
+pub fn set_keyword(db: &Db, peer: &str, word: &str) -> Result<(), String> {
+    contact_ensure(db, peer)?;
+    let blob = enc_text(db, word)?;
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute("UPDATE contacts SET kw=?1 WHERE node_id=?2", rusqlite::params![blob, peer])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Minha palavra-chave (em claro) pra um contato, se definida.
+pub fn get_keyword(db: &Db, peer: &str) -> Result<Option<String>, String> {
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    let blob: Option<Vec<u8>> = conn
+        .query_row("SELECT kw FROM contacts WHERE node_id=?1", rusqlite::params![peer], |r| r.get(0))
+        .ok()
+        .flatten();
+    drop(guard);
+    match blob {
+        Some(b) => {
+            let key = key_of(db)?;
+            Ok(Some(String::from_utf8_lossy(&crate::crypto::decrypt(&key, &b)?).to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Grava o hash da palavra-chave que o PAR mandou (pra comparar com a minha).
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn set_peer_kw_hash(db: &Db, peer: &str, hash: &str) -> Result<(), String> {
+    contact_ensure(db, peer)?;
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute(
+        "UPDATE contacts SET peer_kw_hash=?1 WHERE node_id=?2",
+        rusqlite::params![hash, peer],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn get_peer_kw_hash(db: &Db, peer: &str) -> Result<Option<String>, String> {
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    let h: Option<String> = conn
+        .query_row("SELECT peer_kw_hash FROM contacts WHERE node_id=?1", rusqlite::params![peer], |r| r.get(0))
+        .ok()
+        .flatten();
+    Ok(h)
+}
+
+// ── Auditoria: digest da conversa pra comparar os registros dos 2 dispositivos ──
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditResult {
+    pub count: usize,
+    pub digest: String,
+}
+
+/// SHA-256 sobre as mensagens normalizadas (autor, ts, tipo, conteúdo) da conversa,
+/// ordenadas de forma determinística. Os DOIS dispositivos calculam o mesmo digest se
+/// os registros forem idênticos; qualquer alteração de conteúdo muda o digest → a
+/// divergência é a prova de adulteração (comparação entre as duas partes).
+pub fn audit_digest(db: &Db, peer: &str, my_id: &str) -> Result<AuditResult, String> {
+    let raw: Vec<(String, String, Vec<u8>, i64)> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT direction, kind, body, ts FROM messages WHERE peer=?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![peer], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
+    let mut lines: Vec<String> = raw
+        .into_iter()
+        .map(|(direction, kind, blob, ts)| {
+            let author = if direction == "out" { my_id } else { peer };
+            let body = dec_text(db, &blob);
+            let payload = if kind == "file" {
+                // caminho local é específico do aparelho → usa só nome+tamanho
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .map(|v| {
+                        format!(
+                            "{}|{}",
+                            v["filename"].as_str().unwrap_or(""),
+                            v["size"].as_u64().unwrap_or(0)
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                body
+            };
+            format!("{author}\t{ts}\t{kind}\t{payload}")
+        })
+        .collect();
+    lines.sort(); // independe da ordem de chegada em cada aparelho
+    let count = lines.len();
+    let digest = crate::crypto::hash_hex(lines.join("\n").as_bytes());
+    Ok(AuditResult { count, digest })
 }
 
 #[derive(Serialize)]

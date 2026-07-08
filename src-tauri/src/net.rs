@@ -22,6 +22,9 @@ pub const EVENT_MESSAGE_IN: &str = "message-in";
 /// Recibo de leitura recebido: a UI atualiza os ✓✓ da conversa.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_RECEIPTS: &str = "receipts";
+/// Palavra-chave do par chegou/mudou: a UI reavalia o status (confere/diverge).
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_KEYWORD: &str = "keyword";
 #[cfg(feature = "p2p")]
 const ALPN: &[u8] = b"taylorchat/msg/0";
 
@@ -31,8 +34,12 @@ pub fn start(_app: tauri::AppHandle, _secret: [u8; 32]) {
     eprintln!("[taylorchat] rede P2P desativada (compile com --features p2p)");
 }
 #[cfg(not(feature = "p2p"))]
-pub async fn send_text(_app: &tauri::AppHandle, _peer: &str, _body: &str) -> Result<(), String> {
+pub async fn send_text(_app: &tauri::AppHandle, _peer: &str, _body: &str, _ts: i64) -> Result<(), String> {
     Err("mensageria ao vivo requer build com --features p2p (Fase 3)".into())
+}
+#[cfg(not(feature = "p2p"))]
+pub async fn send_keyword(_app: &tauri::AppHandle, _peer: &str, _hash: &str) -> Result<(), String> {
+    Ok(())
 }
 #[cfg(not(feature = "p2p"))]
 #[allow(clippy::too_many_arguments)]
@@ -44,6 +51,7 @@ pub async fn send_file(
     _source_path: &str,
     _transfer_id: &str,
     _file_key: &[u8; 32],
+    _ts: i64,
 ) -> Result<(), String> {
     Err("envio de arquivo requer build com --features p2p (Fase 5)".into())
 }
@@ -55,20 +63,32 @@ pub async fn send_read(_app: &tauri::AppHandle, _peer: &str) -> Result<(), Strin
 // ─────────────────────────────── build com iroh ───────────────────────────────
 #[cfg(feature = "p2p")]
 mod imp {
-    use super::{ALPN, EVENT_MESSAGE_IN, EVENT_RECEIPTS};
+    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_RECEIPTS};
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
     use base64::Engine;
     use iroh::endpoint::{Connection, RecvStream, SendStream};
     use iroh::{Endpoint, NodeId, SecretKey};
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tauri::async_runtime::Mutex as AsyncMutex;
     use tauri::{Emitter, Manager};
     use vodozemac::olm::Account;
 
     static ENDPOINT: OnceLock<Endpoint> = OnceLock::new();
     static ACCOUNT: OnceLock<Mutex<Account>> = OnceLock::new();
+    // Um lock por par serializa TODA operação de ratchet (enviar/receber) com aquele
+    // contato — sem isso, mensagens concorrentes leem-e-gravam o mesmo estado do
+    // ratchet ao mesmo tempo e o dessincronizam (a mensagem seguinte não decifra).
+    static PEER_LOCKS: OnceLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+
+    fn peer_lock(peer: &str) -> Arc<AsyncMutex<()>> {
+        let map = PEER_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut m = map.lock().expect("peer locks");
+        m.entry(peer.to_string()).or_insert_with(|| Arc::new(AsyncMutex::new(()))).clone()
+    }
 
     // Cabeçalhos são pequenos; os frames de chunk carregam ~1 MiB comprimido+cifrado.
     const MAX_FRAME: usize = 4 << 20; // 4 MiB (teto de um frame)
@@ -152,8 +172,19 @@ mod imp {
     }
 
     // ── envio (unificado texto/arquivo) ────────────────────────────────
-    pub async fn send_text(app: &tauri::AppHandle, peer: &str, body: &str) -> Result<(), String> {
-        let inner = json!({ "k": "text", "body": body }).to_string();
+    /// `ts` = timestamp do remetente (o mesmo guardado localmente) — transmitido pra
+    /// os dois lados baterem na auditoria.
+    pub async fn send_text(app: &tauri::AppHandle, peer: &str, body: &str, ts: i64) -> Result<(), String> {
+        let _g = peer_lock(peer).lock_owned().await;
+        let inner = json!({ "k": "text", "body": body, "ts": ts }).to_string();
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
+    }
+
+    /// Envia o hash da minha palavra-chave pra esse contato (verificação anti-MITM).
+    pub async fn send_keyword(app: &tauri::AppHandle, peer: &str, hash: &str) -> Result<(), String> {
+        let _g = peer_lock(peer).lock_owned().await;
+        let inner = json!({ "k": "keyword", "hash": hash }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
     }
@@ -165,6 +196,7 @@ mod imp {
         if crate::db::session_get(&db, peer)?.is_none() {
             return Ok(());
         }
+        let _g = peer_lock(peer).lock_owned().await;
         let inner = json!({ "k": "read" }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
@@ -184,7 +216,9 @@ mod imp {
         source_path: &str,
         transfer_id: &str,
         file_key: &[u8; 32],
+        ts: i64,
     ) -> Result<(), String> {
+        let _g = peer_lock(peer).lock_owned().await;
         let size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
         let inner = json!({
             "k": "file",
@@ -193,6 +227,7 @@ mod imp {
             "size": size,
             "transferId": transfer_id,
             "fileKey": b64(file_key),
+            "ts": ts,
         })
         .to_string();
         let (_conn, mut s, mut r) =
@@ -309,6 +344,8 @@ mod imp {
         recv_s: &mut RecvStream,
     ) -> Result<(), String> {
         let db = app.state::<Db>();
+        // Serializa com esse par: um ratchet de cada vez (evita dessincronizar).
+        let _g = peer_lock(peer_hex).lock_owned().await;
         let first = read_frame(recv_s).await?;
         let v: Value = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
         match v["t"].as_str() {
@@ -375,10 +412,11 @@ mod imp {
         };
 
         let iv: Value = serde_json::from_str(&inner).map_err(|e| format!("conteúdo inválido: {e}"))?;
+        let ts = iv["ts"].as_i64().unwrap_or_else(now_ms);
         match iv["k"].as_str() {
             Some("text") => {
                 let body = iv["body"].as_str().unwrap_or_default();
-                let msg = crate::db::record_incoming(db, peer_hex, body)?;
+                let msg = crate::db::record_incoming(db, peer_hex, body, ts)?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
             }
             Some("file") => {
@@ -440,13 +478,19 @@ mod imp {
                     "filename": filename, "mime": mime, "size": size, "localPath": local_path,
                 })
                 .to_string();
-                let msg = crate::db::record_file(db, peer_hex, "in", &meta, "received")?;
+                let msg = crate::db::record_file(db, peer_hex, "in", &meta, "received", Some(ts))?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
             }
             // Recibo de leitura: marca as MINHAS mensagens pra esse par como lidas.
             Some("read") => {
                 crate::db::mark_out_read(db, peer_hex)?;
                 let _ = app.emit(EVENT_RECEIPTS, &json!({ "peer": peer_hex }));
+            }
+            // Palavra-chave do par: guarda o hash e avisa a UI (confere/diverge).
+            Some("keyword") => {
+                let hash = iv["hash"].as_str().ok_or("keyword sem hash")?;
+                crate::db::set_peer_kw_hash(db, peer_hex, hash)?;
+                let _ = app.emit(EVENT_KEYWORD, &json!({ "peer": peer_hex }));
             }
             other => return Err(format!("conteúdo desconhecido: {other:?}")),
         }
@@ -460,7 +504,15 @@ mod imp {
         }
         s
     }
+
+    fn now_ms() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(feature = "p2p")]
-pub use imp::{send_file, send_read, send_text, start};
+pub use imp::{send_file, send_keyword, send_read, send_text, start};

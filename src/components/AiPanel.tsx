@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as ai from "../lib/ai";
 import type { Message } from "../lib/types";
+import { t } from "../lib/i18n";
 
 interface Props {
   messages: Message[];
@@ -83,8 +84,8 @@ export function AiPanel({ messages, draft, onUseText, onClose }: Props) {
   return (
     <aside className="ai-panel">
       <header className="ai-head">
-        <strong>✦ IA local</strong>
-        <button className="btn-icon" onClick={onClose} title="Fechar">
+        <strong>{t("ai.title")}</strong>
+        <button className="btn-icon" onClick={onClose} title={t("settings.close")}>
           ✕
         </button>
       </header>
@@ -92,13 +93,13 @@ export function AiPanel({ messages, draft, onUseText, onClose }: Props) {
       <div className="ai-setup">
         <div className="ai-row">
           <button className="btn" onClick={chooseFolder}>
-            Pasta de modelos
+            {t("ai.folder")}
           </button>
-          <span className={`ai-dot ${ready ? "on" : ""}`} title={ready ? "IA ativa" : "IA parada"} />
+          <span className={`ai-dot ${ready ? "on" : ""}`} />
         </div>
         {dir && <code className="ai-dir">{dir}</code>}
         <select value={model} onChange={(e) => setModel(e.target.value)} disabled={ready}>
-          <option value="">— escolha um modelo .gguf —</option>
+          <option value="">{t("ai.pick")}</option>
           {models
             .filter((m) => !m.isProjector)
             .map((m) => (
@@ -109,39 +110,39 @@ export function AiPanel({ messages, draft, onUseText, onClose }: Props) {
         </select>
         {!ready ? (
           <button className="btn btn-primary" disabled={!model || busy === "start"} onClick={start}>
-            {busy === "start" ? "Iniciando…" : "Iniciar IA"}
+            {busy === "start" ? t("ai.starting") : t("ai.start")}
           </button>
         ) : (
           <button className="btn" onClick={stop}>
-            Parar IA (porta {p})
+            {t("ai.stop")} · {p}
           </button>
         )}
       </div>
 
       <div className="ai-actions">
         <button className="btn" disabled={!ready || !!busy} onClick={() => run("suggest", () => ai.suggestReply(p, messages))}>
-          Sugerir resposta
+          {t("ai.suggest")}
         </button>
         <button className="btn" disabled={!ready || !!busy} onClick={() => run("summary", () => ai.summarizeConversation(p, messages))}>
-          Resumir conversa
+          {t("ai.summarize")}
         </button>
         <button
           className="btn"
           disabled={!ready || !!busy || !draft.trim()}
           onClick={() => run("improve", () => ai.improveDraft(p, draft, "Melhore a redação mantendo o sentido e o tom."))}
         >
-          Melhorar rascunho
+          {t("ai.improve")}
         </button>
         <button
           className="btn"
           disabled={!ready || !!busy || !draft.trim()}
           onClick={() => run("translate", () => ai.translate(p, draft, "inglês"))}
         >
-          Traduzir rascunho (EN)
+          {t("ai.translate")}
         </button>
       </div>
 
-      {busy && busy !== "start" && <div className="ai-busy">Pensando…</div>}
+      {busy && busy !== "start" && <div className="ai-busy">{t("ai.thinking")}</div>}
       {err && <div className="ai-err">{err}</div>}
 
       {result && (
@@ -149,16 +150,16 @@ export function AiPanel({ messages, draft, onUseText, onClose }: Props) {
           <textarea value={result} onChange={(e) => setResult(e.target.value)} rows={6} />
           <div className="ai-result-actions">
             <button className="btn btn-primary" onClick={() => onUseText(result)}>
-              Usar no rascunho
+              {t("ai.use")}
             </button>
             <button className="btn" onClick={() => navigator.clipboard.writeText(result).catch(() => {})}>
-              Copiar
+              {t("ai.copy")}
             </button>
           </div>
         </div>
       )}
 
-      <p className="ai-note">A IA roda 100% local e só sugere — nada é enviado sem você mandar.</p>
+      <p className="ai-note">{t("ai.note")}</p>
     </aside>
   );
 }

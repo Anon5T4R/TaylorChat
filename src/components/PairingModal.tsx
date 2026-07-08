@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type { MyIdentity } from "../lib/types";
+import { t } from "../lib/i18n";
 
 interface Props {
   me: MyIdentity;
@@ -50,7 +51,7 @@ export function PairingModal({ me, onClose, onAdd }: Props) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
-          <h3>Parear contato</h3>
+          <h3>{t("pair.title")}</h3>
           <button className="btn-icon" onClick={onClose}>
             ✕
           </button>
@@ -58,25 +59,22 @@ export function PairingModal({ me, onClose, onAdd }: Props) {
 
         <div className="pair-grid">
           <section className="pair-mine">
-            <h4>Meu convite</h4>
-            <p className="hint">Esta é a sua identidade. Para mandar o convite:</p>
+            <h4>{t("pair.mine")}</h4>
+            <p className="hint">{t("pair.mineHint")}</p>
             <div className="qr" dangerouslySetInnerHTML={{ __html: me.qrSvg }} />
-            <p className="hint">
-              peça para a outra pessoa <strong>escanear este QR</strong> (ou colar o código abaixo)
-              no TaylorChat dela — aí vocês viram contatos. Compartilhe por um canal que você confia.
-            </p>
+            <p className="hint">{t("pair.mineHint2")}</p>
             <div className="invite-row">
               <code className="invite">{me.invite}</code>
               <button className="btn" onClick={copy}>
-                {copied ? "Copiado!" : "Copiar"}
+                {copied ? t("pair.copied") : t("pair.copy")}
               </button>
             </div>
           </section>
 
           <section className="pair-other">
-            <h4>Adicionar por convite</h4>
+            <h4>{t("pair.add")}</h4>
             <label>
-              Convite (código <code>taylorchat:</code> ou o id)
+              {t("pair.inviteLabel")}
               <textarea
                 rows={3}
                 value={invite}
@@ -85,16 +83,16 @@ export function PairingModal({ me, onClose, onAdd }: Props) {
               />
             </label>
             <label>
-              Apelido (opcional)
+              {t("pair.nickLabel")}
               <input
                 value={nickname}
-                placeholder="Ex.: Maria"
+                placeholder={t("pair.nickPh")}
                 onChange={(e) => setNickname(e.target.value)}
               />
             </label>
             {err && <p className="err">{err}</p>}
             <button className="btn btn-primary" disabled={busy || !invite.trim()} onClick={add}>
-              {busy ? "Adicionando…" : "Adicionar contato"}
+              {busy ? t("pair.adding") : t("pair.addBtn")}
             </button>
           </section>
         </div>

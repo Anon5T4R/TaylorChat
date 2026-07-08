@@ -36,7 +36,7 @@ async fn send_message(
         return Err("mensagem vazia".into());
     }
     let mut msg = db::enqueue(&db, &peer, &body)?;
-    match net::send_text(&app, &peer, &body).await {
+    match net::send_text(&app, &peer, &body, msg.ts).await {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -81,8 +81,10 @@ async fn attach_file(
         "fileKey": base64::engine::general_purpose::STANDARD.encode(file_key),
     })
     .to_string();
-    let mut msg = db::record_file(&db, &peer, "out", &meta, "queued")?;
-    match net::send_file(&app, &peer, &filename, &mime, &local_path, &transfer_id, &file_key).await {
+    let mut msg = db::record_file(&db, &peer, "out", &meta, "queued", None)?;
+    match net::send_file(&app, &peer, &filename, &mime, &local_path, &transfer_id, &file_key, msg.ts)
+        .await
+    {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -140,11 +142,11 @@ async fn resend_queued(
                 db::set_state(&db, m.id, "failed")?; // cópia sumiu
                 continue;
             }
-            net::send_file(&app, &peer, filename, mime, path, transfer_id, &file_key)
+            net::send_file(&app, &peer, filename, mime, path, transfer_id, &file_key, m.ts)
                 .await
                 .is_ok()
         } else {
-            net::send_text(&app, &peer, &m.body).await.is_ok()
+            net::send_text(&app, &peer, &m.body, m.ts).await.is_ok()
         };
         if !ok {
             break;
@@ -153,6 +155,63 @@ async fn resend_queued(
         sent += 1;
     }
     Ok(sent)
+}
+
+/// Palavra-chave combinada fora do app pra um contato: guarda a minha e manda o HASH
+/// dela pro par (nunca a palavra em si). Best-effort — se o par estiver offline, a
+/// palavra fica salva e o hash vai quando der. Palavra vazia = remove a minha.
+#[tauri::command]
+async fn set_keyword(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    peer: String,
+    word: String,
+) -> Result<(), String> {
+    let word = word.trim().to_string();
+    db::set_keyword(&db, &peer, &word)?;
+    if !word.is_empty() {
+        let h = crypto::hash_hex(word.to_lowercase().as_bytes());
+        let _ = net::send_keyword(&app, &peer, &h).await;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeywordStatus {
+    has_mine: bool,
+    has_peer: bool,
+    matches: Option<bool>, // None = falta um dos lados
+    word: Option<String>,  // a minha (pra pré-preencher o campo)
+}
+
+/// Estado da palavra-chave de um contato: se tenho a minha, se recebi a do par, e se
+/// batem. Divergência NÃO bloqueia a conversa — só sinaliza.
+#[tauri::command(async)]
+fn keyword_status(db: tauri::State<'_, Db>, peer: String) -> Result<KeywordStatus, String> {
+    let mine = db::get_keyword(&db, &peer)?;
+    let peer_hash = db::get_peer_kw_hash(&db, &peer)?;
+    let matches = match (&mine, &peer_hash) {
+        (Some(w), Some(ph)) => Some(&crypto::hash_hex(w.trim().to_lowercase().as_bytes()) == ph),
+        _ => None,
+    };
+    Ok(KeywordStatus {
+        has_mine: mine.is_some(),
+        has_peer: peer_hash.is_some(),
+        matches,
+        word: mine,
+    })
+}
+
+/// Digest da conversa pra auditoria — os dois dispositivos comparam pra provar que o
+/// conteúdo não foi adulterado (divergência = alguém mexeu no registro).
+#[tauri::command(async)]
+fn audit_conversation(
+    db: tauri::State<'_, Db>,
+    id: tauri::State<'_, Identity>,
+    peer: String,
+) -> Result<db::AuditResult, String> {
+    db::audit_digest(&db, &peer, &id.node_id_hex())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -187,6 +246,9 @@ pub fn run() {
             attach_file,
             mark_read,
             resend_queued,
+            set_keyword,
+            keyword_status,
+            audit_conversation,
             pairing::my_identity,
             pairing::parse_invite,
             db::contacts_list,
@@ -194,6 +256,7 @@ pub fn run() {
             db::contact_remove,
             db::messages_list,
             db::message_set_state,
+            db::clear_conversation,
             db::conversations_summary,
             llm::list_models,
             llm::start_llm,

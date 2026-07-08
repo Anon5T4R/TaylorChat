@@ -16,6 +16,7 @@ export const contactRemove = (nodeId: string) => invoke<void>("contact_remove", 
 
 // ── Mensagens ────────────────────────────────────────────────────────────
 export const messagesList = (peer: string) => invoke<Message[]>("messages_list", { peer });
+export const clearConversation = (peer: string) => invoke<void>("clear_conversation", { peer });
 export const sendMessage = (peer: string, body: string) =>
   invoke<Message>("send_message", { peer, body });
 
@@ -50,6 +51,27 @@ export const markRead = (peer: string) => invoke<void>("mark_read", { peer });
 /// Assina o evento de recibo de leitura (minhas mensagens pro par viraram "lidas").
 export const onReceipts = (cb: (peer: string) => void): Promise<UnlistenFn> =>
   listen<{ peer: string }>("receipts", (e) => cb(e.payload.peer));
+
+// ── Palavra-chave por contato ────────────────────────────────────────────
+export interface KeywordStatus {
+  hasMine: boolean;
+  hasPeer: boolean;
+  matches: boolean | null; // null = falta um dos lados
+  word: string | null;
+}
+export const setKeyword = (peer: string, word: string) =>
+  invoke<void>("set_keyword", { peer, word });
+export const keywordStatus = (peer: string) => invoke<KeywordStatus>("keyword_status", { peer });
+export const onKeyword = (cb: (peer: string) => void): Promise<UnlistenFn> =>
+  listen<{ peer: string }>("keyword", (e) => cb(e.payload.peer));
+
+// ── Auditoria ────────────────────────────────────────────────────────────
+export interface AuditResult {
+  count: number;
+  digest: string;
+}
+export const auditConversation = (peer: string) =>
+  invoke<AuditResult>("audit_conversation", { peer });
 
 // ── IA local (Fase 6) ────────────────────────────────────────────────────
 export interface LlmStatus {

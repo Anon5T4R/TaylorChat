@@ -1,5 +1,6 @@
 import type { Contact, ConvoSummary, MyIdentity } from "../lib/types";
 import { avatarColor, shortId, shortTime } from "../lib/ui";
+import { t } from "../lib/i18n";
 
 interface Props {
   me: MyIdentity | null;
@@ -9,9 +10,19 @@ interface Props {
   summaries: Record<string, ConvoSummary>;
   onSelect: (nodeId: string) => void;
   onOpenPairing: () => void;
+  onOpenSettings: () => void;
 }
 
-export function Sidebar({ me, contacts, selected, unread, summaries, onSelect, onOpenPairing }: Props) {
+export function Sidebar({
+  me,
+  contacts,
+  selected,
+  unread,
+  summaries,
+  onSelect,
+  onOpenPairing,
+  onOpenSettings,
+}: Props) {
   return (
     <aside className="sidebar">
       <header className="sidebar-head">
@@ -19,14 +30,19 @@ export function Sidebar({ me, contacts, selected, unread, summaries, onSelect, o
           <span className="brand-dot" />
           TaylorChat
         </div>
-        <button className="btn-icon" title="Parear / adicionar contato" onClick={onOpenPairing}>
-          ＋
-        </button>
+        <div className="sidebar-actions">
+          <button className="btn-icon" title={t("sidebar.settingsTip")} onClick={onOpenSettings}>
+            ⚙
+          </button>
+          <button className="btn-icon" title={t("sidebar.pairTip")} onClick={onOpenPairing}>
+            ＋
+          </button>
+        </div>
       </header>
 
       {me && (
         <div className="me" title={me.nodeId}>
-          <span className="me-label">eu</span>
+          <span className="me-label">{t("me")}</span>
           <code className="me-id">{shortId(me.nodeId)}</code>
         </div>
       )}
@@ -34,9 +50,9 @@ export function Sidebar({ me, contacts, selected, unread, summaries, onSelect, o
       <div className="contacts">
         {contacts.length === 0 && (
           <div className="empty">
-            <p>Nenhum contato ainda.</p>
+            <p>{t("sidebar.empty")}</p>
             <button className="btn" onClick={onOpenPairing}>
-              Parear com alguém
+              {t("sidebar.pair")}
             </button>
           </div>
         )}

@@ -2,10 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "./lib/api";
 import type { Contact, ConvoSummary, Message, MyIdentity } from "./lib/types";
+import { getLang, setLang as setI18nLang, t, type Lang } from "./lib/i18n";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { PairingModal } from "./components/PairingModal";
 import { AiPanel } from "./components/AiPanel";
+import { SettingsModal } from "./components/SettingsModal";
+
+type Theme = "system" | "light" | "dark";
+
+function applyTheme(theme: Theme) {
+  const root = document.documentElement;
+  if (theme === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+}
 
 export default function App() {
   const [me, setMe] = useState<MyIdentity | null>(null);
@@ -15,14 +25,55 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [pairingOpen, setPairingOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [summaries, setSummaries] = useState<Record<string, ConvoSummary>>({});
   const [dropping, setDropping] = useState(false);
+  const [kw, setKw] = useState<api.KeywordStatus | null>(null);
 
-  // ref pra listeners de rede não lerem `selected` desatualizado
+  // Preferências
+  const [lang, setLangState] = useState<Lang>(getLang());
+  const [theme, setThemeState] = useState<Theme>(
+    (localStorage.getItem("taylorchat.theme") as Theme) || "system",
+  );
+  const [readReceipts, setReadReceiptsState] = useState<boolean>(
+    localStorage.getItem("taylorchat.readReceipts") !== "false",
+  );
+
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selected;
+  const rrRef = useRef(readReceipts);
+  rrRef.current = readReceipts;
+
+  useEffect(() => applyTheme(theme), [theme]);
+
+  // Reenvio periódico: o que ficou na fila (par offline) tenta sair sozinho de tempos
+  // em tempos, além de quando você abre a conversa ou o par te manda algo.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const peer = selectedRef.current;
+      if (peer) flushQueue(peer);
+    }, 25000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const changeLang = (l: Lang) => {
+    setI18nLang(l);
+    setLangState(l);
+  };
+  const changeTheme = (tm: Theme) => {
+    localStorage.setItem("taylorchat.theme", tm);
+    setThemeState(tm);
+  };
+  const changeReadReceipts = (b: boolean) => {
+    localStorage.setItem("taylorchat.readReceipts", String(b));
+    setReadReceiptsState(b);
+  };
+  const doMarkRead = (peer: string) => {
+    if (rrRef.current) api.markRead(peer).catch(() => {});
+  };
 
   const reloadContacts = useCallback(async () => {
     try {
@@ -37,7 +88,7 @@ export default function App() {
       const list = await api.conversationsSummary();
       setSummaries(Object.fromEntries(list.map((s) => [s.peer, s])));
     } catch {
-      /* prévia é cosmética — não vira erro na tela */
+      /* prévia é cosmética */
     }
   }, []);
 
@@ -49,7 +100,10 @@ export default function App() {
     }
   }, []);
 
-  /// Tenta despachar a fila do par; se algo saiu e a conversa está aberta, recarrega.
+  const loadKw = useCallback((peer: string) => {
+    api.keywordStatus(peer).then(setKw).catch(() => setKw(null));
+  }, []);
+
   const flushQueue = useCallback(
     (peer: string) => {
       api
@@ -62,7 +116,6 @@ export default function App() {
     [loadMessages],
   );
 
-  // boot: identidade + contatos + prévias + listeners (mensagens, recibos, drag&drop)
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     (async () => {
@@ -75,14 +128,14 @@ export default function App() {
       await reloadSummaries();
       unlisteners.push(
         await api.onMessageIn((m) => {
+          reloadContacts(); // pode ter auto-criado um contato novo
           reloadSummaries();
           if (m.peer === selectedRef.current) {
             setMessages((prev) => [...prev, m]);
-            api.markRead(m.peer).catch(() => {});
+            doMarkRead(m.peer);
           } else {
             setUnread((prev) => ({ ...prev, [m.peer]: (prev[m.peer] ?? 0) + 1 }));
           }
-          // o par acabou de falar comigo → está online: despacha o que ficou na fila
           flushQueue(m.peer);
         }),
       );
@@ -91,7 +144,11 @@ export default function App() {
           if (peer === selectedRef.current) loadMessages(peer);
         }),
       );
-      // Drag & drop de arquivos na conversa (paths vêm do webview do Tauri).
+      unlisteners.push(
+        await api.onKeyword((peer) => {
+          if (peer === selectedRef.current) loadKw(peer);
+        }),
+      );
       try {
         unlisteners.push(
           await getCurrentWebview().onDragDropEvent((event) => {
@@ -117,21 +174,23 @@ export default function App() {
           }),
         );
       } catch {
-        /* fora do Tauri (preview) não há drag&drop nativo */
+        /* sem drag&drop fora do Tauri */
       }
     })();
     return () => unlisteners.forEach((u) => u());
-  }, [reloadContacts, reloadSummaries, loadMessages, flushQueue]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadContacts, reloadSummaries, loadMessages, loadKw, flushQueue]);
 
   const handleSelect = useCallback(
     (nodeId: string) => {
       setSelected(nodeId);
       loadMessages(nodeId);
+      loadKw(nodeId);
       setUnread((prev) => (prev[nodeId] ? { ...prev, [nodeId]: 0 } : prev));
-      api.markRead(nodeId).catch(() => {});
+      doMarkRead(nodeId);
       flushQueue(nodeId);
     },
-    [loadMessages, flushQueue],
+    [loadMessages, loadKw, flushQueue],
   );
 
   const handleSend = useCallback(
@@ -186,6 +245,29 @@ export default function App() {
     [selected, reloadContacts],
   );
 
+  const handleClear = useCallback(async () => {
+    if (!selected) return;
+    try {
+      await api.clearConversation(selected);
+      setMessages([]);
+      reloadSummaries();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, reloadSummaries]);
+
+  const handleSetKeyword = useCallback(async () => {
+    if (!selected) return;
+    const word = window.prompt(t("kw.prompt"), kw?.word ?? "");
+    if (word === null) return;
+    try {
+      await api.setKeyword(selected, word);
+      loadKw(selected);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, kw, loadKw]);
+
   const handleAddContact = useCallback(
     async (nodeId: string, nickname: string) => {
       await api.contactAdd(nodeId, nickname);
@@ -203,7 +285,7 @@ export default function App() {
   );
 
   return (
-    <div className={`app ${showAi ? "with-ai" : ""}`}>
+    <div className={`app ${showAi ? "with-ai" : ""}`} key={lang}>
       <Sidebar
         me={me}
         contacts={sortedContacts}
@@ -212,11 +294,13 @@ export default function App() {
         summaries={summaries}
         onSelect={handleSelect}
         onOpenPairing={() => setPairingOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <ChatPanel
         contact={selectedContact}
         messages={messages}
         draft={draft}
+        kw={kw}
         onDraftChange={setDraft}
         onSend={handleSend}
         onAttach={handleAttach}
@@ -224,6 +308,8 @@ export default function App() {
         aiOpen={aiOpen}
         onRename={handleRenameContact}
         onRemove={handleRemoveContact}
+        onSetKeyword={handleSetKeyword}
+        onClear={handleClear}
       />
       {showAi && (
         <AiPanel
@@ -236,9 +322,21 @@ export default function App() {
       {pairingOpen && me && (
         <PairingModal me={me} onClose={() => setPairingOpen(false)} onAdd={handleAddContact} />
       )}
+      {settingsOpen && (
+        <SettingsModal
+          theme={theme}
+          onTheme={changeTheme}
+          lang={lang}
+          onLang={changeLang}
+          readReceipts={readReceipts}
+          onReadReceipts={changeReadReceipts}
+          auditPeer={selected}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
       {dropping && selected && (
         <div className="drop-overlay">
-          <div className="drop-inner">📎 Solte para enviar</div>
+          <div className="drop-inner">📎 {t("drop.hint")}</div>
         </div>
       )}
       {error && (

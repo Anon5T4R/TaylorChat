@@ -1,4 +1,5 @@
 // Utilidades visuais compartilhadas (sidebar + conversa).
+import { t } from "./i18n";
 
 /** Cor estável por contato: hash do node_id → matiz HSL. */
 export function avatarColor(nodeId: string): string {
@@ -23,8 +24,8 @@ function startOfDay(ts: number): number {
 export function dayLabel(ts: number): string {
   const today = startOfDay(Date.now());
   const day = startOfDay(ts);
-  if (day === today) return "Hoje";
-  if (day === today - DAY) return "Ontem";
+  if (day === today) return t("day.today");
+  if (day === today - DAY) return t("day.yesterday");
   return new Date(ts).toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
