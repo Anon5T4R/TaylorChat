@@ -35,12 +35,15 @@ pub async fn send_text(_app: &tauri::AppHandle, _peer: &str, _body: &str) -> Res
     Err("mensageria ao vivo requer build com --features p2p (Fase 3)".into())
 }
 #[cfg(not(feature = "p2p"))]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_file(
     _app: &tauri::AppHandle,
     _peer: &str,
     _filename: &str,
     _mime: &str,
     _source_path: &str,
+    _transfer_id: &str,
+    _file_key: &[u8; 32],
 ) -> Result<(), String> {
     Err("envio de arquivo requer build com --features p2p (Fase 5)".into())
 }
@@ -58,9 +61,8 @@ mod imp {
     use base64::Engine;
     use iroh::endpoint::{Connection, RecvStream, SendStream};
     use iroh::{Endpoint, NodeId, SecretKey};
-    use rand::RngCore;
     use serde_json::{json, Value};
-    use std::io::{Read, Write};
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::{Mutex, OnceLock};
     use tauri::{Emitter, Manager};
     use vodozemac::olm::Account;
@@ -168,33 +170,43 @@ mod imp {
         ack(&mut s, &mut r).await
     }
 
-    /// Envia um arquivo **em streaming**: metadados (com a chave de uso único) vão no
-    /// cabeçalho cifrado pelo ratchet; o conteúdo segue em pedaços de 1 MiB, cada um
-    /// comprimido (zstd) + cifrado. Nada do arquivo inteiro fica em RAM → arquivos
-    /// grandes ok. Lê do disco em `source_path`.
+    /// Envia um arquivo **em streaming e retomável**: metadados (chave de uso único +
+    /// `transferId` estável) vão no cabeçalho cifrado pelo ratchet; o receptor responde
+    /// de qual chunk retomar; o conteúdo segue em pedaços de 1 MiB (comprimido+cifrado)
+    /// a partir daí. Nada do arquivo inteiro fica em RAM → arquivos grandes ok, e uma
+    /// queda no meio retoma de onde parou (não recomeça).
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_file(
         app: &tauri::AppHandle,
         peer: &str,
         filename: &str,
         mime: &str,
         source_path: &str,
+        transfer_id: &str,
+        file_key: &[u8; 32],
     ) -> Result<(), String> {
         let size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
-        let mut file_key = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut file_key);
         let inner = json!({
             "k": "file",
             "filename": filename,
             "mime": mime,
             "size": size,
-            "fileKey": b64(&file_key),
+            "transferId": transfer_id,
+            "fileKey": b64(file_key),
         })
         .to_string();
         let (_conn, mut s, mut r) =
             send_header(app, peer, &inner, json!({ "streamed": true })).await?;
 
+        // O receptor diz de qual chunk retomar (0 = do começo).
+        let rf = read_frame(&mut r).await?;
+        let rv: Value = serde_json::from_slice(&rf).map_err(|e| e.to_string())?;
+        let from_chunk = rv["resumeChunk"].as_u64().unwrap_or(0);
+
         let mut f = std::fs::File::open(source_path)
             .map_err(|e| format!("falha ao abrir '{source_path}': {e}"))?;
+        f.seek(SeekFrom::Start(from_chunk * CHUNK as u64))
+            .map_err(|e| format!("falha ao posicionar no anexo: {e}"))?;
         let mut buf = vec![0u8; CHUNK];
         loop {
             let n = f.read(&mut buf).map_err(|e| format!("falha ao ler anexo: {e}"))?;
@@ -202,7 +214,7 @@ mod imp {
                 break;
             }
             let comp = crate::media::compress(&buf[..n])?;
-            let enc = crate::crypto::encrypt(&file_key, &comp)?;
+            let enc = crate::crypto::encrypt(file_key, &comp)?;
             write_frame(&mut s, &enc).await?;
         }
         write_frame(&mut s, &[]).await?; // frame vazio = fim
@@ -317,10 +329,10 @@ mod imp {
 
                 let second = read_frame(recv_s).await?;
                 let v2: Value = serde_json::from_slice(&second).map_err(|e| e.to_string())?;
-                process_message(app, &db, peer_hex, &v2, recv_s).await?;
+                process_message(app, &db, peer_hex, &v2, send_s, recv_s).await?;
             }
             Some("msg") => {
-                process_message(app, &db, peer_hex, &v, recv_s).await?;
+                process_message(app, &db, peer_hex, &v, send_s, recv_s).await?;
             }
             other => return Err(format!("frame desconhecido: {other:?}")),
         }
@@ -337,6 +349,7 @@ mod imp {
         db: &Db,
         peer_hex: &str,
         v: &Value,
+        send_s: &mut SendStream,
         recv_s: &mut RecvStream,
     ) -> Result<(), String> {
         let is_prekey = v["t"].as_str() == Some("msg_prekey");
@@ -372,15 +385,40 @@ mod imp {
                 let filename = iv["filename"].as_str().unwrap_or("arquivo");
                 let mime = iv["mime"].as_str().unwrap_or("application/octet-stream");
                 let size = iv["size"].as_u64().unwrap_or(0);
+                let transfer_id = iv["transferId"].as_str().ok_or("arquivo sem transferId")?;
                 let key_vec = unb64(iv["fileKey"].as_str().ok_or("arquivo sem chave")?)?;
                 let file_key: [u8; 32] =
                     key_vec.try_into().map_err(|_| "chave de arquivo inválida".to_string())?;
 
-                // Recebe os pedaços e grava incremental no disco (sem segurar o arquivo
-                // inteiro em RAM). Frame vazio = fim.
-                let dest = crate::media::unique_dest(app, filename)?;
-                let mut out = std::fs::File::create(&dest)
-                    .map_err(|e| format!("falha ao criar '{}': {e}", dest.display()))?;
+                // Retomada: se já existe um parcial dessa transferência, continua de onde
+                // parou (alinhado à fronteira de chunk pra não corromper).
+                let partial = crate::media::partial_path(app, transfer_id)?;
+                let have = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+                let mut from_chunk = have / CHUNK as u64;
+                if from_chunk * CHUNK as u64 > size {
+                    from_chunk = size / CHUNK as u64; // parcial inconsistente → recorta
+                }
+                let resume_bytes = from_chunk * CHUNK as u64;
+                {
+                    use std::fs::OpenOptions;
+                    let f = OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .open(&partial)
+                        .map_err(|e| format!("falha ao abrir parcial: {e}"))?;
+                    f.set_len(resume_bytes).map_err(|e| e.to_string())?;
+                }
+                // avisa o remetente de onde retomar
+                let rf = serde_json::to_vec(&json!({ "resumeChunk": from_chunk }))
+                    .map_err(|e| e.to_string())?;
+                write_frame(send_s, &rf).await?;
+
+                // grava os pedaços que chegam, incremental (append). Frame vazio = fim.
+                let mut out = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&partial)
+                    .map_err(|e| format!("falha ao abrir parcial: {e}"))?;
                 loop {
                     let frame = read_frame(recv_s).await?;
                     if frame.is_empty() {
@@ -391,6 +429,12 @@ mod imp {
                     out.write_all(&data).map_err(|e| format!("falha ao gravar anexo: {e}"))?;
                 }
                 out.flush().map_err(|e| e.to_string())?;
+                drop(out);
+
+                // completo → move o parcial pro nome final
+                let dest = crate::media::unique_dest(app, filename)?;
+                std::fs::rename(&partial, &dest)
+                    .map_err(|e| format!("falha ao finalizar anexo: {e}"))?;
                 let local_path = dest.to_string_lossy().to_string();
                 let meta = json!({
                     "filename": filename, "mime": mime, "size": size, "localPath": local_path,

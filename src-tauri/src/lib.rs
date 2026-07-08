@@ -9,6 +9,7 @@ mod pairing;
 mod ratchet;
 
 use std::sync::Mutex;
+use base64::Engine;
 use tauri::Manager;
 
 use db::{Db, Message};
@@ -70,12 +71,18 @@ async fn attach_file(
     let mime = media::guess_mime(&filename);
     // Cópia local (streaming, sem RAM) pra reabrir/reenviar; o envio lê dela.
     let local_path = media::copy_attachment(&app, &filename, &path)?;
+    // Id de transferência + chave estáveis (guardados no meta local) pra permitir
+    // retomada: um reenvio reusa os mesmos, e o receptor continua o parcial.
+    let transfer_id = crypto::random_hex(16);
+    let file_key = crypto::random_key();
     let meta = serde_json::json!({
         "filename": filename, "mime": mime, "size": size, "localPath": local_path,
+        "transferId": transfer_id,
+        "fileKey": base64::engine::general_purpose::STANDARD.encode(file_key),
     })
     .to_string();
     let mut msg = db::record_file(&db, &peer, "out", &meta, "queued")?;
-    match net::send_file(&app, &peer, &filename, &mime, &local_path).await {
+    match net::send_file(&app, &peer, &filename, &mime, &local_path, &transfer_id, &file_key).await {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -110,19 +117,32 @@ async fn resend_queued(
             // corpo = JSON de metadados; a cópia local é a fonte do reenvio
             let meta: serde_json::Value =
                 serde_json::from_str(&m.body).map_err(|e| format!("anexo corrompido: {e}"))?;
-            let (Some(path), Some(filename), Some(mime)) = (
+            let (Some(path), Some(filename), Some(mime), Some(transfer_id), Some(key_b64)) = (
                 meta["localPath"].as_str(),
                 meta["filename"].as_str(),
                 meta["mime"].as_str(),
+                meta["transferId"].as_str(),
+                meta["fileKey"].as_str(),
             ) else {
-                db::set_state(&db, m.id, "failed")?; // sem cópia local, não dá pra reenviar
+                db::set_state(&db, m.id, "failed")?; // sem dados pra reenviar
+                continue;
+            };
+            let Ok(file_key) = base64::engine::general_purpose::STANDARD
+                .decode(key_b64)
+                .ok()
+                .and_then(|v| <[u8; 32]>::try_from(v).ok())
+                .ok_or(())
+            else {
+                db::set_state(&db, m.id, "failed")?;
                 continue;
             };
             if !std::path::Path::new(path).exists() {
                 db::set_state(&db, m.id, "failed")?; // cópia sumiu
                 continue;
             }
-            net::send_file(&app, &peer, filename, mime, path).await.is_ok()
+            net::send_file(&app, &peer, filename, mime, path, transfer_id, &file_key)
+                .await
+                .is_ok()
         } else {
             net::send_text(&app, &peer, &m.body).await.is_ok()
         };

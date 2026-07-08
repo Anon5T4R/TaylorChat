@@ -50,6 +50,19 @@ pub fn copy_attachment(app: &tauri::AppHandle, filename: &str, src: &str) -> Res
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// Caminho do arquivo parcial de uma transferência em andamento (retomada). Fica em
+/// `attachments/.partial/<transferId>` e persiste entre reconexões/reinícios.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn partial_path(app: &tauri::AppHandle, transfer_id: &str) -> Result<PathBuf, String> {
+    let dir = attachments_dir(app)?.join(".partial");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("falha ao criar '{}': {e}", dir.display()))?;
+    let safe: String = transfer_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if safe.is_empty() {
+        return Err("id de transferência inválido".into());
+    }
+    Ok(dir.join(safe))
+}
+
 /// Palpite simples de MIME pela extensão (só pra UI escolher ícone/preview).
 pub fn guess_mime(filename: &str) -> String {
     let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
@@ -102,6 +115,31 @@ mod tests {
             out.extend_from_slice(&dec);
         }
         assert_eq!(out, file);
+    }
+
+    #[test]
+    fn retomada_reconstroi_apos_queda_no_meio() {
+        // Arquivo em chunks; o receptor recebe só os K primeiros (simulando queda),
+        // depois o remetente RETOMA do chunk K e o resto completa o arquivo idêntico.
+        let file: Vec<u8> = (0..300_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let key = crate::crypto::derive_key(&[3u8; 32]);
+        let chunk = 64 * 1024;
+        let chunks: Vec<&[u8]> = file.chunks(chunk).collect();
+
+        // 1ª tentativa: recebe só os 2 primeiros chunks e "cai".
+        let mut received: Vec<u8> = Vec::new();
+        for part in chunks.iter().take(2) {
+            let enc = crate::crypto::encrypt(&key, &compress(part).unwrap()).unwrap();
+            received.extend_from_slice(&decompress(&crate::crypto::decrypt(&key, &enc).unwrap()).unwrap());
+        }
+        // Retomada: alinha à fronteira de chunk e continua daí.
+        let from = received.len() / chunk; // = 2
+        received.truncate(from * chunk);
+        for part in chunks.iter().skip(from) {
+            let enc = crate::crypto::encrypt(&key, &compress(part).unwrap()).unwrap();
+            received.extend_from_slice(&decompress(&crate::crypto::decrypt(&key, &enc).unwrap()).unwrap());
+        }
+        assert_eq!(received, file);
     }
 
     #[test]

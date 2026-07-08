@@ -20,6 +20,20 @@ pub fn derive_key(identity_secret: &[u8; 32]) -> [u8; 32] {
     okm
 }
 
+/// Chave aleatória de 32 bytes (ex.: chave de uso único de um anexo).
+pub fn random_key() -> [u8; 32] {
+    let mut k = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut k);
+    k
+}
+
+/// Id aleatório em hex (ex.: id de transferência estável pra retomada).
+pub fn random_hex(n: usize) -> String {
+    let mut b = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let mut nonce = [0u8; NONCE_LEN];
