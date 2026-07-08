@@ -90,6 +90,14 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
          )",
         [],
     );
+    // Backfill: contatos salvos antes de a coluna threads existir (ou por um contact_add
+    // que não criava a conversa principal) precisam da sua thread principal, senão somem
+    // da sidebar, que lista threads. Idempotente.
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO threads(convo, name, created_ts)
+         SELECT node_id, '', added_ts FROM contacts",
+        [],
+    );
     let state = app.state::<Db>();
     *state.conn.lock().map_err(|_| "estado do banco corrompido")? = Some(conn);
     *state.key.lock().map_err(|_| "estado do banco corrompido")? =
@@ -167,6 +175,13 @@ pub fn contact_add(db: State<'_, Db>, node_id: String, nickname: String) -> Resu
             "INSERT INTO contacts(node_id, nickname, added_ts) VALUES(?1, ?2, ?3)
              ON CONFLICT(node_id) DO UPDATE SET nickname=excluded.nickname",
             rusqlite::params![node_id, nickname.trim(), now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        // Garante a conversa principal (convo = node_id); sem isso o contato não
+        // aparece na sidebar, que lista threads (não contatos).
+        conn.execute(
+            "INSERT OR IGNORE INTO threads(convo, name, created_ts) VALUES(?1, '', ?2)",
+            rusqlite::params![node_id, now_ms()],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
