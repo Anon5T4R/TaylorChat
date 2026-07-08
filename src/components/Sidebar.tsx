@@ -1,20 +1,22 @@
-import type { Contact, ConvoSummary, MyIdentity } from "../lib/types";
-import { avatarColor, shortId, shortTime } from "../lib/ui";
+import type { Contact, ConvoSummary, MyIdentity, Thread } from "../lib/types";
+import { avatarColor, shortId, shortTime, splitConvo } from "../lib/ui";
 import { t } from "../lib/i18n";
 
 interface Props {
   me: MyIdentity | null;
+  threads: Thread[];
   contacts: Contact[];
   selected: string | null;
   unread: Record<string, number>;
   summaries: Record<string, ConvoSummary>;
-  onSelect: (nodeId: string) => void;
+  onSelect: (convo: string) => void;
   onOpenPairing: () => void;
   onOpenSettings: () => void;
 }
 
 export function Sidebar({
   me,
+  threads,
   contacts,
   selected,
   unread,
@@ -23,6 +25,11 @@ export function Sidebar({
   onOpenPairing,
   onOpenSettings,
 }: Props) {
+  const byNode = new Map(contacts.map((c) => [c.nodeId, c]));
+  const rows = [...threads].sort(
+    (a, b) => (summaries[b.convo]?.ts ?? 0) - (summaries[a.convo]?.ts ?? 0),
+  );
+
   return (
     <aside className="sidebar">
       <header className="sidebar-head">
@@ -48,7 +55,7 @@ export function Sidebar({
       )}
 
       <div className="contacts">
-        {contacts.length === 0 && (
+        {rows.length === 0 && (
           <div className="empty">
             <p>{t("sidebar.empty")}</p>
             <button className="btn" onClick={onOpenPairing}>
@@ -56,25 +63,29 @@ export function Sidebar({
             </button>
           </div>
         )}
-        {contacts.map((c) => {
-          const s = summaries[c.nodeId];
-          const n = unread[c.nodeId] ?? 0;
+        {rows.map((th) => {
+          const { node } = splitConvo(th.convo);
+          const c = byNode.get(node);
+          const base = c?.nickname || shortId(node);
+          const name = th.name ? `${base} · ${th.name}` : base;
+          const s = summaries[th.convo];
+          const n = unread[th.convo] ?? 0;
           return (
             <button
-              key={c.nodeId}
-              className={`contact ${selected === c.nodeId ? "is-active" : ""}`}
-              onClick={() => onSelect(c.nodeId)}
+              key={th.convo}
+              className={`contact ${selected === th.convo ? "is-active" : ""}`}
+              onClick={() => onSelect(th.convo)}
             >
-              <span className="avatar" style={{ background: avatarColor(c.nodeId) }}>
-                {(c.nickname || c.nodeId).slice(0, 1).toUpperCase()}
+              <span className="avatar" style={{ background: avatarColor(node) }}>
+                {base.slice(0, 1).toUpperCase()}
               </span>
               <span className="contact-body">
                 <span className="contact-top">
-                  <span className="contact-name">{c.nickname || shortId(c.nodeId)}</span>
+                  <span className="contact-name">{name}</span>
                   {s && <span className="contact-time">{shortTime(s.ts)}</span>}
                 </span>
                 <span className={`contact-preview ${n > 0 ? "is-unread" : ""}`}>
-                  {s ? (s.direction === "out" ? `Você: ${s.body}` : s.body) : shortId(c.nodeId)}
+                  {s ? (s.direction === "out" ? `${t("me")}: ${s.body}` : s.body) : shortId(node)}
                 </span>
               </span>
               {n > 0 && <span className="badge">{n}</span>}

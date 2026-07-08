@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import type { Contact, ConvoSummary, Message, MyIdentity, ParsedInvite } from "./types";
+import type { Contact, ConvoSummary, Message, MyIdentity, ParsedInvite, Thread } from "./types";
 
 // ── Identidade / pareamento ──────────────────────────────────────────────
 export const myIdentity = () => invoke<MyIdentity>("my_identity");
@@ -25,15 +25,44 @@ export const sendMessage = (peer: string, body: string) =>
 export const pickAndAttach = async (peer: string): Promise<Message | null> => {
   const path = await openDialog({ multiple: false, directory: false });
   if (!path || typeof path !== "string") return null;
-  return invoke<Message>("attach_file", { peer, path });
+  return invoke<Message>("attach_file", { peer, path, sticker: false });
 };
 
 /// Envia um arquivo por caminho (usado pelo drag & drop).
 export const attachPath = (peer: string, path: string) =>
-  invoke<Message>("attach_file", { peer, path });
+  invoke<Message>("attach_file", { peer, path, sticker: false });
+
+/// Envia um sticker (imagem já salva) como sticker.
+export const sendSticker = (peer: string, path: string) =>
+  invoke<Message>("attach_file", { peer, path, sticker: true });
+
+// ── Stickers ──────────────────────────────────────────────────────────────
+export interface Sticker {
+  pack: string;
+  path: string;
+}
+export const stickersList = () => invoke<Sticker[]>("stickers_list");
+export const stickerAdd = (pack: string, src: string) =>
+  invoke<string>("sticker_add", { pack, src });
+/// Diálogo pra escolher uma imagem e criar um sticker num pacote.
+export const pickAndCreateSticker = async (pack: string): Promise<string | null> => {
+  const path = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Imagem", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+  });
+  if (!path || typeof path !== "string") return null;
+  return stickerAdd(pack, path);
+};
 
 /// Última mensagem de cada conversa (prévia + ordenação da sidebar).
 export const conversationsSummary = () => invoke<ConvoSummary[]>("conversations_summary");
+
+// ── Conversas (multichat) ────────────────────────────────────────────────
+export const threadsList = () => invoke<Thread[]>("threads_list");
+export const threadCreate = (convo: string, name: string) =>
+  invoke<void>("thread_create", { convo, name });
+export const threadDelete = (convo: string) => invoke<void>("thread_delete", { convo });
 
 /// Reenvia o que ficou na fila pra um par; devolve quantas saíram.
 export const resendQueued = (peer: string) => invoke<number>("resend_queued", { peer });

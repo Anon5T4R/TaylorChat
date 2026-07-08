@@ -12,6 +12,18 @@ export function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
 }
 
+/** Chave de conversa → (node_id, thread). `node` (principal) ou `node#thread` (extra). */
+export function splitConvo(convo: string): { node: string; thread: string } {
+  const i = convo.indexOf("#");
+  return i === -1 ? { node: convo, thread: "" } : { node: convo.slice(0, i), thread: convo.slice(i + 1) };
+}
+
+export function randomHex(n: number): string {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 const DAY = 86_400_000;
 
 function startOfDay(ts: number): number {

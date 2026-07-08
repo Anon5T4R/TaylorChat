@@ -34,11 +34,21 @@ pub fn start(_app: tauri::AppHandle, _secret: [u8; 32]) {
     eprintln!("[taylorchat] rede P2P desativada (compile com --features p2p)");
 }
 #[cfg(not(feature = "p2p"))]
-pub async fn send_text(_app: &tauri::AppHandle, _peer: &str, _body: &str, _ts: i64) -> Result<(), String> {
+pub async fn send_text(
+    _app: &tauri::AppHandle,
+    _peer: &str,
+    _thread: &str,
+    _body: &str,
+    _ts: i64,
+) -> Result<(), String> {
     Err("mensageria ao vivo requer build com --features p2p (Fase 3)".into())
 }
 #[cfg(not(feature = "p2p"))]
 pub async fn send_keyword(_app: &tauri::AppHandle, _peer: &str, _hash: &str) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(not(feature = "p2p"))]
+pub async fn send_read(_app: &tauri::AppHandle, _peer: &str, _thread: &str) -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(feature = "p2p"))]
@@ -52,12 +62,10 @@ pub async fn send_file(
     _transfer_id: &str,
     _file_key: &[u8; 32],
     _ts: i64,
+    _thread: &str,
+    _sticker: bool,
 ) -> Result<(), String> {
     Err("envio de arquivo requer build com --features p2p (Fase 5)".into())
-}
-#[cfg(not(feature = "p2p"))]
-pub async fn send_read(_app: &tauri::AppHandle, _peer: &str) -> Result<(), String> {
-    Ok(()) // sem rede: nada a confirmar
 }
 
 // ─────────────────────────────── build com iroh ───────────────────────────────
@@ -174,14 +182,31 @@ mod imp {
     // ── envio (unificado texto/arquivo) ────────────────────────────────
     /// `ts` = timestamp do remetente (o mesmo guardado localmente) — transmitido pra
     /// os dois lados baterem na auditoria.
-    pub async fn send_text(app: &tauri::AppHandle, peer: &str, body: &str, ts: i64) -> Result<(), String> {
+    /// Chave de conversa: node (principal) ou node#thread (extra). Os dois lados
+    /// montam a mesma chave a partir do node_id + do `thread` que vem no envelope.
+    fn convo_key(node: &str, thread: &str) -> String {
+        if thread.is_empty() {
+            node.to_string()
+        } else {
+            format!("{node}#{thread}")
+        }
+    }
+
+    pub async fn send_text(
+        app: &tauri::AppHandle,
+        peer: &str,
+        thread: &str,
+        body: &str,
+        ts: i64,
+    ) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
-        let inner = json!({ "k": "text", "body": body, "ts": ts }).to_string();
+        let inner = json!({ "k": "text", "body": body, "ts": ts, "thread": thread }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
     }
 
     /// Envia o hash da minha palavra-chave pra esse contato (verificação anti-MITM).
+    /// Palavra-chave é por CONTATO (identidade), não por conversa — sem `thread`.
     pub async fn send_keyword(app: &tauri::AppHandle, peer: &str, hash: &str) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
         let inner = json!({ "k": "keyword", "hash": hash }).to_string();
@@ -191,13 +216,13 @@ mod imp {
 
     /// Recibo de leitura: avisa o par que li as mensagens dele. Só faz sentido se já
     /// existe sessão (a gente já conversou); sem sessão, não há nada a confirmar.
-    pub async fn send_read(app: &tauri::AppHandle, peer: &str) -> Result<(), String> {
+    pub async fn send_read(app: &tauri::AppHandle, peer: &str, thread: &str) -> Result<(), String> {
         let db = app.state::<Db>();
         if crate::db::session_get(&db, peer)?.is_none() {
             return Ok(());
         }
         let _g = peer_lock(peer).lock_owned().await;
-        let inner = json!({ "k": "read" }).to_string();
+        let inner = json!({ "k": "read", "thread": thread }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
     }
@@ -217,6 +242,8 @@ mod imp {
         transfer_id: &str,
         file_key: &[u8; 32],
         ts: i64,
+        thread: &str,
+        sticker: bool,
     ) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
         let size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
@@ -228,6 +255,8 @@ mod imp {
             "transferId": transfer_id,
             "fileKey": b64(file_key),
             "ts": ts,
+            "thread": thread,
+            "sticker": sticker,
         })
         .to_string();
         let (_conn, mut s, mut r) =
@@ -413,10 +442,16 @@ mod imp {
 
         let iv: Value = serde_json::from_str(&inner).map_err(|e| format!("conteúdo inválido: {e}"))?;
         let ts = iv["ts"].as_i64().unwrap_or_else(now_ms);
+        // A conversa (thread) vem no envelope; monta a mesma chave que o remetente usa,
+        // e garante contato + thread (auto-salvar). Sessão/ratchet são por node_id.
+        let thread = iv["thread"].as_str().unwrap_or("");
+        let convo = convo_key(peer_hex, thread);
+        crate::db::contact_ensure(db, peer_hex)?;
+        crate::db::thread_ensure(db, &convo, "")?;
         match iv["k"].as_str() {
             Some("text") => {
                 let body = iv["body"].as_str().unwrap_or_default();
-                let msg = crate::db::record_incoming(db, peer_hex, body, ts)?;
+                let msg = crate::db::record_incoming(db, &convo, body, ts)?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
             }
             Some("file") => {
@@ -476,15 +511,16 @@ mod imp {
                 let local_path = dest.to_string_lossy().to_string();
                 let meta = json!({
                     "filename": filename, "mime": mime, "size": size, "localPath": local_path,
+                    "sticker": iv["sticker"].as_bool().unwrap_or(false),
                 })
                 .to_string();
-                let msg = crate::db::record_file(db, peer_hex, "in", &meta, "received", Some(ts))?;
+                let msg = crate::db::record_file(db, &convo, "in", &meta, "received", Some(ts))?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
             }
-            // Recibo de leitura: marca as MINHAS mensagens pra esse par como lidas.
+            // Recibo de leitura: marca as MINHAS mensagens dessa conversa como lidas.
             Some("read") => {
-                crate::db::mark_out_read(db, peer_hex)?;
-                let _ = app.emit(EVENT_RECEIPTS, &json!({ "peer": peer_hex }));
+                crate::db::mark_out_read(db, &convo)?;
+                let _ = app.emit(EVENT_RECEIPTS, &json!({ "peer": convo }));
             }
             // Palavra-chave do par: guarda o hash e avisa a UI (confere/diverge).
             Some("keyword") => {

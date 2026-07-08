@@ -21,6 +21,16 @@ fn get_startup_file() -> Option<String> {
     None
 }
 
+/// Separa a chave de conversa em (node_id, thread). `node` (principal) ou
+/// `node#threadId` (extra). A rede usa o node_id (conecta + ratchet); o banco usa a
+/// chave inteira; o `thread` viaja no envelope pra os dois lados baterem.
+fn split_convo(convo: &str) -> (&str, &str) {
+    match convo.split_once('#') {
+        Some((node, thread)) => (node, thread),
+        None => (convo, ""),
+    }
+}
+
 /// Envia uma mensagem: grava como `queued` no banco e tenta despachar pela rede
 /// (Fase 3). Se a rede não estiver compilada/disponível, fica `queued` e é
 /// reenviada depois. Devolve a linha (com o estado resultante) pra UI.
@@ -35,8 +45,9 @@ async fn send_message(
     if body.is_empty() {
         return Err("mensagem vazia".into());
     }
+    let (node, thread) = split_convo(&peer);
     let mut msg = db::enqueue(&db, &peer, &body)?;
-    match net::send_text(&app, &peer, &body, msg.ts).await {
+    match net::send_text(&app, node, thread, &body, msg.ts).await {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -59,6 +70,7 @@ async fn attach_file(
     db: tauri::State<'_, Db>,
     peer: String,
     path: String,
+    sticker: bool,
 ) -> Result<Message, String> {
     let size = std::fs::metadata(&path)
         .map_err(|e| format!("falha ao ler '{path}': {e}"))?
@@ -79,11 +91,15 @@ async fn attach_file(
         "filename": filename, "mime": mime, "size": size, "localPath": local_path,
         "transferId": transfer_id,
         "fileKey": base64::engine::general_purpose::STANDARD.encode(file_key),
+        "sticker": sticker,
     })
     .to_string();
+    let (node, thread) = split_convo(&peer);
     let mut msg = db::record_file(&db, &peer, "out", &meta, "queued", None)?;
-    match net::send_file(&app, &peer, &filename, &mime, &local_path, &transfer_id, &file_key, msg.ts)
-        .await
+    match net::send_file(
+        &app, node, &filename, &mime, &local_path, &transfer_id, &file_key, msg.ts, thread, sticker,
+    )
+    .await
     {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
@@ -101,7 +117,8 @@ async fn attach_file(
 /// estiver disponível/o par offline, simplesmente não confirma agora.
 #[tauri::command]
 async fn mark_read(app: tauri::AppHandle, peer: String) -> Result<(), String> {
-    net::send_read(&app, &peer).await
+    let (node, thread) = split_convo(&peer);
+    net::send_read(&app, node, thread).await
 }
 
 /// Tenta reenviar o que ficou na fila (`queued`) pra um par. Para no primeiro erro
@@ -112,6 +129,7 @@ async fn resend_queued(
     db: tauri::State<'_, Db>,
     peer: String,
 ) -> Result<u32, String> {
+    let (node, thread) = split_convo(&peer);
     let queued = db::queued_out(&db, &peer)?;
     let mut sent = 0u32;
     for m in queued {
@@ -142,11 +160,14 @@ async fn resend_queued(
                 db::set_state(&db, m.id, "failed")?; // cópia sumiu
                 continue;
             }
-            net::send_file(&app, &peer, filename, mime, path, transfer_id, &file_key, m.ts)
-                .await
-                .is_ok()
+            let sticker = meta["sticker"].as_bool().unwrap_or(false);
+            net::send_file(
+                &app, node, filename, mime, path, transfer_id, &file_key, m.ts, thread, sticker,
+            )
+            .await
+            .is_ok()
         } else {
-            net::send_text(&app, &peer, &m.body, m.ts).await.is_ok()
+            net::send_text(&app, node, thread, &m.body, m.ts).await.is_ok()
         };
         if !ok {
             break;
@@ -211,7 +232,20 @@ fn audit_conversation(
     id: tauri::State<'_, Identity>,
     peer: String,
 ) -> Result<db::AuditResult, String> {
-    db::audit_digest(&db, &peer, &id.node_id_hex())
+    let (node, _thread) = split_convo(&peer);
+    db::audit_digest(&db, &peer, &id.node_id_hex(), node)
+}
+
+/// Lista todos os stickers salvos (todos os pacotes).
+#[tauri::command(async)]
+fn stickers_list(app: tauri::AppHandle) -> Result<Vec<media::Sticker>, String> {
+    media::list_stickers(&app)
+}
+
+/// Cria um sticker a partir de uma imagem qualquer (copia pro pacote). Devolve o caminho.
+#[tauri::command(async)]
+fn sticker_add(app: tauri::AppHandle, pack: String, src: String) -> Result<String, String> {
+    media::add_sticker(&app, &pack, &src)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -249,6 +283,8 @@ pub fn run() {
             set_keyword,
             keyword_status,
             audit_conversation,
+            stickers_list,
+            sticker_add,
             pairing::my_identity,
             pairing::parse_invite,
             db::contacts_list,
@@ -258,6 +294,9 @@ pub fn run() {
             db::message_set_state,
             db::clear_conversation,
             db::conversations_summary,
+            db::threads_list,
+            db::thread_create,
+            db::thread_delete,
             llm::list_models,
             llm::start_llm,
             llm::stop_llm,

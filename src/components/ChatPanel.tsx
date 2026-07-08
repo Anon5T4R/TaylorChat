@@ -4,9 +4,11 @@ import { openAttachment, type KeywordStatus } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
 import { avatarColor, dayLabel, shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
+import { StickerPicker } from "./StickerPicker";
 
 interface Props {
   contact: Contact | null;
+  threadName: string;
   messages: Message[];
   draft: string;
   kw: KeywordStatus | null;
@@ -19,6 +21,8 @@ interface Props {
   onRemove: () => void;
   onSetKeyword: () => void;
   onClear: () => void;
+  onNewChat: () => void;
+  onSendSticker: (path: string) => void;
 }
 
 function formatSize(bytes: number): string {
@@ -55,6 +59,19 @@ function FileBubble({ body }: { body: string }) {
   if (!meta) return <span className="bubble-body">{t("chat.fileUnreadable")}</span>;
   const path = meta.localPath;
 
+  // Sticker → imagem grande sem moldura de bolha.
+  if (path && meta.sticker && !imgFail) {
+    return (
+      <img
+        className="sticker-att"
+        src={convertFileSrc(path)}
+        alt="sticker"
+        onError={() => setImgFail(true)}
+        onClick={() => openAttachment(path)}
+      />
+    );
+  }
+
   // Imagem com cópia local → preview inline (clica pra abrir no visualizador do SO).
   if (path && meta.mime.startsWith("image/") && !imgFail) {
     return (
@@ -87,6 +104,7 @@ function FileBubble({ body }: { body: string }) {
 
 export function ChatPanel({
   contact,
+  threadName,
   messages,
   draft,
   kw,
@@ -99,10 +117,13 @@ export function ChatPanel({
   onRemove,
   onSetKeyword,
   onClear,
+  onNewChat,
+  onSendSticker,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [stickerOpen, setStickerOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -172,7 +193,10 @@ export function ChatPanel({
           {(contact.nickname || contact.nodeId).slice(0, 1).toUpperCase()}
         </span>
         <div className="chat-head-body">
-          <strong>{contact.nickname || shortId(contact.nodeId)}</strong>
+          <strong>
+            {contact.nickname || shortId(contact.nodeId)}
+            {threadName && <span className="thread-tag">· {threadName}</span>}
+          </strong>
           <code>{shortId(contact.nodeId)}</code>
         </div>
         <div className="chat-head-actions">
@@ -198,6 +222,9 @@ export function ChatPanel({
             }}
           >
             🧹
+          </button>
+          <button className="btn-hdr" title={t("chat.newChatTip")} onClick={onNewChat}>
+            ➕
           </button>
           <button
             className="btn-hdr"
@@ -284,7 +311,24 @@ export function ChatPanel({
         <div ref={endRef} />
       </div>
 
+      {stickerOpen && (
+        <StickerPicker
+          onPick={(p) => {
+            onSendSticker(p);
+            setStickerOpen(false);
+          }}
+          onClose={() => setStickerOpen(false)}
+        />
+      )}
+
       <footer className="composer">
+        <button
+          className={`btn-attach ${stickerOpen ? "is-active" : ""}`}
+          title={t("chat.stickerTip")}
+          onClick={() => setStickerOpen((v) => !v)}
+        >
+          😀
+        </button>
         <button className="btn-attach" title={t("chat.attachTip")} onClick={onAttach}>
           📎
         </button>

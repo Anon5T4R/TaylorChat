@@ -50,6 +50,65 @@ pub fn copy_attachment(app: &tauri::AppHandle, filename: &str, src: &str) -> Res
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// Pasta de stickers do usuário (`<dados>/stickers/<pacote>/`).
+fn stickers_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("sem pasta de dados: {e}"))?
+        .join("stickers");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("falha ao criar '{}': {e}", dir.display()))?;
+    Ok(dir)
+}
+
+fn sanitize(name: &str) -> String {
+    let s: String = name.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    let s = s.trim();
+    if s.is_empty() { "geral".to_string() } else { s.to_string() }
+}
+
+/// Copia uma imagem pra um pacote de stickers e devolve o caminho salvo.
+pub fn add_sticker(app: &tauri::AppHandle, pack: &str, src: &str) -> Result<String, String> {
+    let dir = stickers_dir(app)?.join(sanitize(pack));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("falha ao criar pacote: {e}"))?;
+    let name = src.rsplit(['/', '\\']).next().unwrap_or("sticker");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{stamp}_{name}"));
+    std::fs::copy(src, &dest).map_err(|e| format!("falha ao salvar sticker: {e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sticker {
+    pub pack: String,
+    pub path: String,
+}
+
+/// Lista todos os stickers (todos os pacotes).
+pub fn list_stickers(app: &tauri::AppHandle) -> Result<Vec<Sticker>, String> {
+    let base = stickers_dir(app)?;
+    let mut out = Vec::new();
+    let packs = std::fs::read_dir(&base).map_err(|e| e.to_string())?;
+    for pack_entry in packs.flatten() {
+        if !pack_entry.path().is_dir() {
+            continue;
+        }
+        let pack = pack_entry.file_name().to_string_lossy().to_string();
+        if let Ok(files) = std::fs::read_dir(pack_entry.path()) {
+            for f in files.flatten() {
+                if f.path().is_file() {
+                    out.push(Sticker { pack: pack.clone(), path: f.path().to_string_lossy().to_string() });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Caminho do arquivo parcial de uma transferência em andamento (retomada). Fica em
 /// `attachments/.partial/<transferId>` e persiste entre reconexões/reinícios.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "./lib/api";
-import type { Contact, ConvoSummary, Message, MyIdentity } from "./lib/types";
+import type { Contact, ConvoSummary, Message, MyIdentity, Thread } from "./lib/types";
 import { getLang, setLang as setI18nLang, t, type Lang } from "./lib/i18n";
+import { randomHex, splitConvo } from "./lib/ui";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { PairingModal } from "./components/PairingModal";
@@ -20,7 +21,8 @@ function applyTheme(theme: Theme) {
 export default function App() {
   const [me, setMe] = useState<MyIdentity | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [selected, setSelected] = useState<string | null>(null); // convo key
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [pairingOpen, setPairingOpen] = useState(false);
@@ -32,7 +34,6 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const [kw, setKw] = useState<api.KeywordStatus | null>(null);
 
-  // Preferências
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<Theme>(
     (localStorage.getItem("taylorchat.theme") as Theme) || "system",
@@ -48,17 +49,6 @@ export default function App() {
 
   useEffect(() => applyTheme(theme), [theme]);
 
-  // Reenvio periódico: o que ficou na fila (par offline) tenta sair sozinho de tempos
-  // em tempos, além de quando você abre a conversa ou o par te manda algo.
-  useEffect(() => {
-    const id = setInterval(() => {
-      const peer = selectedRef.current;
-      if (peer) flushQueue(peer);
-    }, 25000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const changeLang = (l: Lang) => {
     setI18nLang(l);
     setLangState(l);
@@ -71,8 +61,8 @@ export default function App() {
     localStorage.setItem("taylorchat.readReceipts", String(b));
     setReadReceiptsState(b);
   };
-  const doMarkRead = (peer: string) => {
-    if (rrRef.current) api.markRead(peer).catch(() => {});
+  const doMarkRead = (convo: string) => {
+    if (rrRef.current) api.markRead(convo).catch(() => {});
   };
 
   const reloadContacts = useCallback(async () => {
@@ -82,39 +72,53 @@ export default function App() {
       setError(String(e));
     }
   }, []);
-
+  const reloadThreads = useCallback(async () => {
+    try {
+      setThreads(await api.threadsList());
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
   const reloadSummaries = useCallback(async () => {
     try {
       const list = await api.conversationsSummary();
       setSummaries(Object.fromEntries(list.map((s) => [s.peer, s])));
     } catch {
-      /* prévia é cosmética */
+      /* cosmético */
     }
   }, []);
-
-  const loadMessages = useCallback(async (peer: string) => {
+  const loadMessages = useCallback(async (convo: string) => {
     try {
-      setMessages(await api.messagesList(peer));
+      setMessages(await api.messagesList(convo));
     } catch (e) {
       setError(String(e));
     }
   }, []);
-
-  const loadKw = useCallback((peer: string) => {
-    api.keywordStatus(peer).then(setKw).catch(() => setKw(null));
+  const loadKw = useCallback((node: string) => {
+    api.keywordStatus(node).then(setKw).catch(() => setKw(null));
   }, []);
 
   const flushQueue = useCallback(
-    (peer: string) => {
+    (convo: string) => {
       api
-        .resendQueued(peer)
+        .resendQueued(convo)
         .then((n) => {
-          if (n > 0 && peer === selectedRef.current) loadMessages(peer);
+          if (n > 0 && convo === selectedRef.current) loadMessages(convo);
         })
         .catch(() => {});
     },
     [loadMessages],
   );
+
+  // Reenvio periódico da fila da conversa aberta.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const c = selectedRef.current;
+      if (c) flushQueue(c);
+    }, 25000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -125,10 +129,12 @@ export default function App() {
         setError(String(e));
       }
       await reloadContacts();
+      await reloadThreads();
       await reloadSummaries();
       unlisteners.push(
         await api.onMessageIn((m) => {
-          reloadContacts(); // pode ter auto-criado um contato novo
+          reloadContacts();
+          reloadThreads();
           reloadSummaries();
           if (m.peer === selectedRef.current) {
             setMessages((prev) => [...prev, m]);
@@ -140,13 +146,14 @@ export default function App() {
         }),
       );
       unlisteners.push(
-        await api.onReceipts((peer) => {
-          if (peer === selectedRef.current) loadMessages(peer);
+        await api.onReceipts((convo) => {
+          if (convo === selectedRef.current) loadMessages(convo);
         }),
       );
       unlisteners.push(
-        await api.onKeyword((peer) => {
-          if (peer === selectedRef.current) loadKw(peer);
+        await api.onKeyword((node) => {
+          const cur = selectedRef.current;
+          if (cur && splitConvo(cur).node === node) loadKw(node);
         }),
       );
       try {
@@ -157,13 +164,13 @@ export default function App() {
             if (p.type === "leave") setDropping(false);
             if (p.type === "drop") {
               setDropping(false);
-              const peer = selectedRef.current;
-              if (!peer || !p.paths?.length) return;
+              const convo = selectedRef.current;
+              if (!convo || !p.paths?.length) return;
               (async () => {
                 for (const path of p.paths!.slice(0, 10)) {
                   try {
-                    const msg = await api.attachPath(peer, path);
-                    if (peer === selectedRef.current) setMessages((prev) => [...prev, msg]);
+                    const msg = await api.attachPath(convo, path);
+                    if (convo === selectedRef.current) setMessages((prev) => [...prev, msg]);
                   } catch (e) {
                     setError(String(e));
                   }
@@ -179,16 +186,16 @@ export default function App() {
     })();
     return () => unlisteners.forEach((u) => u());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadContacts, reloadSummaries, loadMessages, loadKw, flushQueue]);
+  }, [reloadContacts, reloadThreads, reloadSummaries, loadMessages, loadKw, flushQueue]);
 
   const handleSelect = useCallback(
-    (nodeId: string) => {
-      setSelected(nodeId);
-      loadMessages(nodeId);
-      loadKw(nodeId);
-      setUnread((prev) => (prev[nodeId] ? { ...prev, [nodeId]: 0 } : prev));
-      doMarkRead(nodeId);
-      flushQueue(nodeId);
+    (convo: string) => {
+      setSelected(convo);
+      loadMessages(convo);
+      loadKw(splitConvo(convo).node);
+      setUnread((prev) => (prev[convo] ? { ...prev, [convo]: 0 } : prev));
+      doMarkRead(convo);
+      flushQueue(convo);
     },
     [loadMessages, loadKw, flushQueue],
   );
@@ -220,23 +227,58 @@ export default function App() {
     }
   }, [selected, reloadSummaries]);
 
-  const handleRemoveContact = useCallback(async () => {
+  const handleSendSticker = useCallback(
+    async (path: string) => {
+      if (!selected) return;
+      try {
+        const msg = await api.sendSticker(selected, path);
+        setMessages((prev) => [...prev, msg]);
+        reloadSummaries();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selected, reloadSummaries],
+  );
+
+  const handleNewChat = useCallback(async () => {
     if (!selected) return;
+    const { node } = splitConvo(selected);
+    const name = window.prompt(t("chat.newChatPrompt"), "");
+    if (name === null) return;
+    const convo = `${node}#${randomHex(5)}`;
     try {
-      await api.contactRemove(selected);
-      setSelected(null);
-      setMessages([]);
-      await reloadContacts();
+      await api.threadCreate(convo, name.trim());
+      await reloadThreads();
+      handleSelect(convo);
     } catch (e) {
       setError(String(e));
     }
-  }, [selected, reloadContacts]);
+  }, [selected, reloadThreads, handleSelect]);
+
+  const handleRemoveContact = useCallback(async () => {
+    if (!selected) return;
+    const { node } = splitConvo(selected);
+    try {
+      // remove todas as conversas desse contato + o contato
+      for (const th of threads) {
+        if (splitConvo(th.convo).node === node) await api.threadDelete(th.convo);
+      }
+      await api.contactRemove(node);
+      setSelected(null);
+      setMessages([]);
+      await reloadContacts();
+      await reloadThreads();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, threads, reloadContacts, reloadThreads]);
 
   const handleRenameContact = useCallback(
     async (nickname: string) => {
       if (!selected) return;
       try {
-        await api.contactAdd(selected, nickname);
+        await api.contactAdd(splitConvo(selected).node, nickname);
         await reloadContacts();
       } catch (e) {
         setError(String(e));
@@ -258,11 +300,12 @@ export default function App() {
 
   const handleSetKeyword = useCallback(async () => {
     if (!selected) return;
+    const node = splitConvo(selected).node;
     const word = window.prompt(t("kw.prompt"), kw?.word ?? "");
     if (word === null) return;
     try {
-      await api.setKeyword(selected, word);
-      loadKw(selected);
+      await api.setKeyword(node, word);
+      loadKw(node);
     } catch (e) {
       setError(String(e));
     }
@@ -272,23 +315,26 @@ export default function App() {
     async (nodeId: string, nickname: string) => {
       await api.contactAdd(nodeId, nickname);
       await reloadContacts();
+      await reloadThreads();
       setPairingOpen(false);
       handleSelect(nodeId);
     },
-    [reloadContacts, handleSelect],
+    [reloadContacts, reloadThreads, handleSelect],
   );
 
-  const selectedContact = contacts.find((c) => c.nodeId === selected) ?? null;
+  const selNode = selected ? splitConvo(selected).node : null;
+  const selThread = selected ? threads.find((th) => th.convo === selected) : undefined;
+  const selectedContact: Contact | null = selNode
+    ? contacts.find((c) => c.nodeId === selNode) ?? { nodeId: selNode, nickname: "", addedTs: 0 }
+    : null;
   const showAi = aiOpen && !!selectedContact;
-  const sortedContacts = [...contacts].sort(
-    (a, b) => (summaries[b.nodeId]?.ts ?? 0) - (summaries[a.nodeId]?.ts ?? 0),
-  );
 
   return (
     <div className={`app ${showAi ? "with-ai" : ""}`} key={lang}>
       <Sidebar
         me={me}
-        contacts={sortedContacts}
+        threads={threads}
+        contacts={contacts}
         selected={selected}
         unread={unread}
         summaries={summaries}
@@ -298,6 +344,7 @@ export default function App() {
       />
       <ChatPanel
         contact={selectedContact}
+        threadName={selThread?.name ?? ""}
         messages={messages}
         draft={draft}
         kw={kw}
@@ -310,6 +357,8 @@ export default function App() {
         onRemove={handleRemoveContact}
         onSetKeyword={handleSetKeyword}
         onClear={handleClear}
+        onNewChat={handleNewChat}
+        onSendSticker={handleSendSticker}
       />
       {showAi && (
         <AiPanel

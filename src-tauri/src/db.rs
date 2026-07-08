@@ -76,6 +76,16 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
     // Palavra-chave por contato: `kw` = a minha (cifrada), `peer_kw_hash` = o hash que o par mandou.
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN kw BLOB", []);
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN peer_kw_hash TEXT", []);
+    // Multichat: cada conversa é uma linha aqui. `convo` = node_id (principal) ou
+    // `node_id#threadId` (extra). A coluna `peer` das mensagens guarda esse `convo`.
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS threads (
+             convo TEXT PRIMARY KEY,
+             name  TEXT NOT NULL DEFAULT '',
+             created_ts INTEGER NOT NULL
+         )",
+        [],
+    );
     let state = app.state::<Db>();
     *state.conn.lock().map_err(|_| "estado do banco corrompido")? = Some(conn);
     *state.key.lock().map_err(|_| "estado do banco corrompido")? =
@@ -195,7 +205,8 @@ pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, St
 }
 
 /// Garante que o par existe como contato (auto-salvar ao receber de alguém novo — sem
-/// isso a conversa ficaria invisível). Nome vazio = a UI mostra o id encurtado.
+/// isso a conversa ficaria invisível). Também garante a conversa principal (convo =
+/// node_id). Nome vazio = a UI mostra o id encurtado.
 pub fn contact_ensure(db: &Db, node_id: &str) -> Result<(), String> {
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
     let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
@@ -204,7 +215,65 @@ pub fn contact_ensure(db: &Db, node_id: &str) -> Result<(), String> {
         rusqlite::params![node_id, now_ms()],
     )
     .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO threads(convo, name, created_ts) VALUES(?1, '', ?2)",
+        rusqlite::params![node_id, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Thread {
+    pub convo: String, // node_id (principal) ou node_id#threadId
+    pub name: String,
+}
+
+/// Todas as conversas (principais + extras) pra sidebar. O front separa o node_id.
+#[tauri::command(async)]
+pub fn threads_list(db: State<'_, Db>) -> Result<Vec<Thread>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT convo, name FROM threads")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(Thread { convo: r.get(0)?, name: r.get(1)? }))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
+/// Cria/garante uma conversa (convo) com um nome. Usado tanto pra criar um chat extra
+/// quanto pra o receptor materializar a thread ao receber a 1ª mensagem dela.
+pub fn thread_ensure(db: &Db, convo: &str, name: &str) -> Result<(), String> {
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO threads(convo, name, created_ts) VALUES(?1, ?2, ?3)",
+        rusqlite::params![convo, name, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Comando pra criar um chat novo com um contato existente (thread extra).
+#[tauri::command(async)]
+pub fn thread_create(db: State<'_, Db>, convo: String, name: String) -> Result<(), String> {
+    thread_ensure(&db, &convo, name.trim())
+}
+
+/// Remove uma conversa (a thread + suas mensagens). A principal não some da lista
+/// (é recriada); extras somem de vez.
+#[tauri::command(async)]
+pub fn thread_delete(db: State<'_, Db>, convo: String) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute("DELETE FROM messages WHERE peer=?1", rusqlite::params![convo])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM threads WHERE convo=?1", rusqlite::params![convo])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 /// Insere uma mensagem (texto ou arquivo), cifrando o corpo em repouso, e devolve a
@@ -219,9 +288,7 @@ fn insert_message(
     state: &str,
     ts: Option<i64>,
 ) -> Result<Message, String> {
-    if direction == "in" {
-        contact_ensure(db, peer)?; // auto-salva quem falou comigo
-    }
+    // (contato/thread são garantidos pela camada de rede, que tem o node_id puro)
     let ts = ts.unwrap_or_else(now_ms);
     let blob = enc_text(db, body)?;
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
@@ -360,13 +427,13 @@ pub struct AuditResult {
 /// ordenadas de forma determinística. Os DOIS dispositivos calculam o mesmo digest se
 /// os registros forem idênticos; qualquer alteração de conteúdo muda o digest → a
 /// divergência é a prova de adulteração (comparação entre as duas partes).
-pub fn audit_digest(db: &Db, peer: &str, my_id: &str) -> Result<AuditResult, String> {
+pub fn audit_digest(db: &Db, convo: &str, my_id: &str, peer_node: &str) -> Result<AuditResult, String> {
     let raw: Vec<(String, String, Vec<u8>, i64)> = with_conn!(db, conn, {
         let mut stmt = conn
             .prepare("SELECT direction, kind, body, ts FROM messages WHERE peer=?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::params![peer], |r| {
+            .query_map(rusqlite::params![convo], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .map_err(|e| e.to_string())?;
@@ -375,7 +442,7 @@ pub fn audit_digest(db: &Db, peer: &str, my_id: &str) -> Result<AuditResult, Str
     let mut lines: Vec<String> = raw
         .into_iter()
         .map(|(direction, kind, blob, ts)| {
-            let author = if direction == "out" { my_id } else { peer };
+            let author = if direction == "out" { my_id } else { peer_node };
             let body = dec_text(db, &blob);
             let payload = if kind == "file" {
                 // caminho local é específico do aparelho → usa só nome+tamanho

@@ -19,6 +19,12 @@ export interface FileMeta {
   mime: string;
   size: number;
   localPath?: string;
+  sticker?: boolean;
+}
+
+export interface Thread {
+  convo: string; // nodeId (principal) ou nodeId#threadId (extra)
+  name: string;
 }
 
 export interface ConvoSummary {
