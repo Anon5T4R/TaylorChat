@@ -2,9 +2,10 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openAttachment, type KeywordStatus } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
-import { avatarColor, dayLabel, shortId } from "../lib/ui";
+import { dayLabel, shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { StickerPicker } from "./StickerPicker";
+import { Avatar } from "./Avatar";
 
 interface Props {
   contact: Contact | null;
@@ -189,12 +190,14 @@ export function ChatPanel({
   return (
     <main className="chat">
       <header className="chat-head">
-        <span className="avatar" style={{ background: avatarColor(contact.nodeId) }}>
-          {(contact.nickname || contact.nodeId).slice(0, 1).toUpperCase()}
-        </span>
+        <Avatar
+          nodeId={contact.nodeId}
+          name={contact.nickname || contact.profileName || contact.nodeId}
+          avatar={contact.avatar}
+        />
         <div className="chat-head-body">
           <strong>
-            {contact.nickname || shortId(contact.nodeId)}
+            {contact.nickname || contact.profileName || shortId(contact.nodeId)}
             {threadName && <span className="thread-tag">· {threadName}</span>}
           </strong>
           <code>{shortId(contact.nodeId)}</code>

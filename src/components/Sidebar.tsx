@@ -1,9 +1,11 @@
-import type { Contact, ConvoSummary, MyIdentity, Thread } from "../lib/types";
-import { avatarColor, shortId, shortTime, splitConvo } from "../lib/ui";
+import type { Contact, ConvoSummary, MyIdentity, Profile, Thread } from "../lib/types";
+import { shortId, shortTime, splitConvo } from "../lib/ui";
 import { t } from "../lib/i18n";
+import { Avatar } from "./Avatar";
 
 interface Props {
   me: MyIdentity | null;
+  myProfile: Profile | null;
   threads: Thread[];
   contacts: Contact[];
   selected: string | null;
@@ -16,6 +18,7 @@ interface Props {
 
 export function Sidebar({
   me,
+  myProfile,
   threads,
   contacts,
   selected,
@@ -48,10 +51,13 @@ export function Sidebar({
       </header>
 
       {me && (
-        <div className="me" title={me.nodeId}>
-          <span className="me-label">{t("me")}</span>
-          <code className="me-id">{shortId(me.nodeId)}</code>
-        </div>
+        <button className="me" title={me.nodeId} onClick={onOpenSettings}>
+          <Avatar nodeId={me.nodeId} name={myProfile?.name || t("me")} avatar={myProfile?.avatar} size={30} />
+          <span className="me-body">
+            <span className="me-name">{myProfile?.name || t("me")}</span>
+            <code className="me-id">{shortId(me.nodeId)}</code>
+          </span>
+        </button>
       )}
 
       <button className="pair-cta" onClick={onOpenPairing}>
@@ -70,7 +76,7 @@ export function Sidebar({
         {rows.map((th) => {
           const { node } = splitConvo(th.convo);
           const c = byNode.get(node);
-          const base = c?.nickname || shortId(node);
+          const base = c?.nickname || c?.profileName || shortId(node);
           const name = th.name ? `${base} · ${th.name}` : base;
           const s = summaries[th.convo];
           const n = unread[th.convo] ?? 0;
@@ -80,9 +86,7 @@ export function Sidebar({
               className={`contact ${selected === th.convo ? "is-active" : ""}`}
               onClick={() => onSelect(th.convo)}
             >
-              <span className="avatar" style={{ background: avatarColor(node) }}>
-                {base.slice(0, 1).toUpperCase()}
-              </span>
+              <Avatar nodeId={node} name={base} avatar={c?.avatar} />
               <span className="contact-body">
                 <span className="contact-top">
                   <span className="contact-name">{name}</span>

@@ -88,6 +88,53 @@ pub struct Sticker {
     pub path: String,
 }
 
+// ── Perfil / avatares ───────────────────────────────────────────────────
+fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("sem pasta de dados: {e}"))?
+        .join("profile");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Redimensiona uma imagem pra 128px (avatar) e salva como PNG no perfil. Devolve o caminho.
+pub fn set_my_avatar(app: &tauri::AppHandle, src: &str) -> Result<String, String> {
+    let img = image::open(src).map_err(|e| format!("imagem inválida: {e}"))?;
+    let small = img.thumbnail(128, 128);
+    let dest = profile_dir(app)?.join("avatar.png");
+    small.save(&dest).map_err(|e| format!("falha ao salvar avatar: {e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Caminho do meu avatar, se existir.
+pub fn my_avatar_path(app: &tauri::AppHandle) -> Option<String> {
+    let p = profile_dir(app).ok()?.join("avatar.png");
+    p.exists().then(|| p.to_string_lossy().to_string())
+}
+
+/// Bytes do meu avatar (pra transmitir), se existir.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn my_avatar_bytes(app: &tauri::AppHandle) -> Option<Vec<u8>> {
+    std::fs::read(my_avatar_path(app)?).ok()
+}
+
+/// Salva o avatar recebido de um contato (cache), sob o node_id. Devolve o caminho.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn save_contact_avatar(app: &tauri::AppHandle, node_id: &str, bytes: &[u8]) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("avatars");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let safe: String = node_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let dest = dir.join(format!("{safe}.png"));
+    std::fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 /// Lista todos os stickers (todos os pacotes).
 pub fn list_stickers(app: &tauri::AppHandle) -> Result<Vec<Sticker>, String> {
     let base = stickers_dir(app)?;

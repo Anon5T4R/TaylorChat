@@ -1,6 +1,6 @@
 [package]
 name = "taylorchat"
-version = "0.1.6"
+version = "0.1.7"
 description = "TaylorChat — mensageiro P2P offline (sem servidor) com IA local"
 authors = ["Joao / Taylor"]
 edition = "2021"
@@ -33,6 +33,8 @@ hkdf = "0.12"
 sha2 = "0.10"
 # Compressão de anexos antes do envio (Fase 5, plano.md §5.6).
 zstd = "0.13"
+# Redimensiona a foto de perfil pra um avatar pequeno (128px) antes de guardar/enviar.
+image = "0.25"
 # Convite/QR de pareamento: gerado como SVG no back (front só renderiza).
 qrcode = "0.14"
 data-encoding = "2"

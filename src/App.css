@@ -110,19 +110,35 @@ body {
 .me {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 10px;
+  padding: 8px 12px;
+  width: 100%;
+  border: none;
   border-bottom: 1px solid var(--border);
+  background: transparent;
   color: var(--text-dim);
   font-size: 12px;
+  cursor: pointer;
+  text-align: left;
 }
-.me-label {
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 10px;
+.me:hover {
+  background: var(--bg-3);
+}
+.me-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.me-name {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .me-id {
-  color: var(--text);
+  color: var(--text-dim);
+  font-size: 10px;
 }
 .pair-cta {
   margin: 8px;
@@ -215,6 +231,11 @@ body {
   font-weight: 700;
   display: grid;
   place-items: center;
+}
+.avatar-img {
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
 }
 .badge {
   margin-left: auto;
@@ -342,6 +363,49 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+.set-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.set-profile-pic {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
+  border-radius: 50%;
+  border: 2px dashed var(--border);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 22px;
+}
+.set-profile-pic:hover {
+  border-color: var(--accent);
+}
+.set-profile-pic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.set-profile-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.set-profile-fields input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
 }
 .set-row {
   display: flex;

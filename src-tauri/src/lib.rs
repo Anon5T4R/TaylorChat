@@ -205,6 +205,47 @@ async fn do_resend(app: &tauri::AppHandle, db: &Db, peer: &str) -> Result<u32, S
     Ok(sent)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Profile {
+    name: String,
+    avatar: Option<String>,
+}
+
+fn read_profile(app: &tauri::AppHandle, db: &Db) -> Result<Profile, String> {
+    let name = db::meta_get(db, "profile_name")?
+        .map(|b| String::from_utf8_lossy(&b).to_string())
+        .unwrap_or_default();
+    Ok(Profile { name, avatar: media::my_avatar_path(app) })
+}
+
+/// Define meu perfil (nome + foto opcional). A foto é redimensionada pra 128px.
+#[tauri::command(async)]
+fn set_profile(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    name: String,
+    photo: Option<String>,
+) -> Result<Profile, String> {
+    db::meta_set(&db, "profile_name", name.trim().as_bytes())?;
+    if let Some(p) = photo.filter(|p| !p.is_empty()) {
+        media::set_my_avatar(&app, &p)?;
+    }
+    read_profile(&app, &db)
+}
+
+#[tauri::command(async)]
+fn get_profile(app: tauri::AppHandle, db: tauri::State<'_, Db>) -> Result<Profile, String> {
+    read_profile(&app, &db)
+}
+
+/// Manda meu perfil pra um contato (best-effort; a UI chama ao abrir a conversa).
+#[tauri::command]
+async fn send_profile(app: tauri::AppHandle, peer: String) -> Result<(), String> {
+    let (node, _thread) = split_convo(&peer);
+    net::send_profile(&app, node).await
+}
+
 /// Palavra-chave combinada fora do app pra um contato: guarda a minha e manda o HASH
 /// dela pro par (nunca a palavra em si). Best-effort — se o par estiver offline, a
 /// palavra fica salva e o hash vai quando der. Palavra vazia = remove a minha.
@@ -367,6 +408,9 @@ pub fn run() {
             set_keyword,
             keyword_status,
             audit_conversation,
+            set_profile,
+            get_profile,
+            send_profile,
             stickers_list,
             sticker_add,
             pairing::my_identity,

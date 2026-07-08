@@ -60,6 +60,9 @@ pub const EVENT_RECEIPTS: &str = "receipts";
 /// Palavra-chave do par chegou/mudou: a UI reavalia o status (confere/diverge).
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_KEYWORD: &str = "keyword";
+/// Perfil (nome/foto) do par chegou/mudou: a UI recarrega os contatos.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_PROFILE: &str = "profile";
 #[cfg(feature = "p2p")]
 const ALPN: &[u8] = b"taylorchat/msg/0";
 
@@ -80,6 +83,10 @@ pub async fn send_text(
 }
 #[cfg(not(feature = "p2p"))]
 pub async fn send_keyword(_app: &tauri::AppHandle, _peer: &str, _hash: &str) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(not(feature = "p2p"))]
+pub async fn send_profile(_app: &tauri::AppHandle, _peer: &str) -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(feature = "p2p"))]
@@ -110,7 +117,7 @@ pub async fn send_file(
 // ─────────────────────────────── build com iroh ───────────────────────────────
 #[cfg(feature = "p2p")]
 mod imp {
-    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_RECEIPTS};
+    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_PROFILE, EVENT_RECEIPTS};
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
     use base64::Engine;
@@ -245,6 +252,23 @@ mod imp {
     ) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
         let inner = json!({ "k": "text", "body": body, "ts": ts, "thread": thread }).to_string();
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
+    }
+
+    /// Manda meu perfil (nome + avatar) pra um contato, que cacheia. Só se já existe
+    /// sessão (não vale abrir handshake só pra isso). Por CONTATO, sem `thread`.
+    pub async fn send_profile(app: &tauri::AppHandle, peer: &str) -> Result<(), String> {
+        let db = app.state::<Db>();
+        if crate::db::session_get(&db, peer)?.is_none() {
+            return Ok(());
+        }
+        let _g = peer_lock(peer).lock_owned().await;
+        let name = crate::db::meta_get(&db, "profile_name")?
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
+        let avatar = crate::media::my_avatar_bytes(app).map(|b| b64(&b)).unwrap_or_default();
+        let inner = json!({ "k": "profile", "name": name, "avatar": avatar }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
     }
@@ -572,6 +596,19 @@ mod imp {
                 crate::db::set_peer_kw_hash(db, peer_hex, hash)?;
                 let _ = app.emit(EVENT_KEYWORD, &json!({ "peer": peer_hex }));
             }
+            // Perfil do par: cacheia nome + avatar (por node_id).
+            Some("profile") => {
+                let name = iv["name"].as_str().unwrap_or("");
+                let av_b64 = iv["avatar"].as_str().unwrap_or("");
+                let avatar_path = if av_b64.is_empty() {
+                    None
+                } else {
+                    let bytes = unb64(av_b64)?;
+                    Some(crate::media::save_contact_avatar(app, peer_hex, &bytes)?)
+                };
+                crate::db::set_contact_profile(db, peer_hex, name, avatar_path.as_deref())?;
+                let _ = app.emit(EVENT_PROFILE, &json!({ "peer": peer_hex }));
+            }
             other => return Err(format!("conteúdo desconhecido: {other:?}")),
         }
         Ok(())
@@ -595,4 +632,4 @@ mod imp {
 }
 
 #[cfg(feature = "p2p")]
-pub use imp::{is_up, send_file, send_keyword, send_read, send_text, start};
+pub use imp::{is_up, send_file, send_keyword, send_profile, send_read, send_text, start};

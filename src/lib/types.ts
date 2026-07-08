@@ -1,7 +1,14 @@
 export interface Contact {
   nodeId: string;
-  nickname: string;
+  nickname: string; // apelido que eu dei
   addedTs: number;
+  profileName?: string | null; // nome que ele definiu
+  avatar?: string | null; // caminho do avatar dele (cache)
+}
+
+export interface Profile {
+  name: string;
+  avatar: string | null;
 }
 
 export interface Message {

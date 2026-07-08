@@ -2,7 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import type { Contact, ConvoSummary, Message, MyIdentity, ParsedInvite, Thread } from "./types";
+import type {
+  Contact,
+  ConvoSummary,
+  Message,
+  MyIdentity,
+  ParsedInvite,
+  Profile,
+  Thread,
+} from "./types";
 
 // ── Identidade / pareamento ──────────────────────────────────────────────
 export const myIdentity = () => invoke<MyIdentity>("my_identity");
@@ -106,6 +114,23 @@ export const setKeyword = (peer: string, word: string) =>
 export const keywordStatus = (peer: string) => invoke<KeywordStatus>("keyword_status", { peer });
 export const onKeyword = (cb: (peer: string) => void): Promise<UnlistenFn> =>
   listen<{ peer: string }>("keyword", (e) => cb(e.payload.peer));
+
+// ── Perfil (nome + foto) ─────────────────────────────────────────────────
+export const getProfile = () => invoke<Profile>("get_profile");
+export const setProfile = (name: string, photo?: string) =>
+  invoke<Profile>("set_profile", { name, photo: photo ?? null });
+export const sendProfile = (peer: string) => invoke<void>("send_profile", { peer });
+export const onProfile = (cb: (node: string) => void): Promise<UnlistenFn> =>
+  listen<{ peer: string }>("profile", (e) => cb(e.payload.peer));
+/// Diálogo pra escolher a foto de perfil.
+export const pickProfilePhoto = async (): Promise<string | null> => {
+  const path = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Imagem", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+  });
+  return typeof path === "string" ? path : null;
+};
 
 // ── Auditoria ────────────────────────────────────────────────────────────
 export interface AuditResult {

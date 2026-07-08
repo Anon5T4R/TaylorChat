@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "./lib/api";
-import type { Contact, ConvoSummary, Message, MyIdentity, Thread } from "./lib/types";
+import type { Contact, ConvoSummary, Message, MyIdentity, Profile, Thread } from "./lib/types";
 import { getLang, setLang as setI18nLang, t, type Lang } from "./lib/i18n";
 import { randomHex, splitConvo } from "./lib/ui";
 import { Sidebar } from "./components/Sidebar";
@@ -33,6 +33,7 @@ export default function App() {
   const [summaries, setSummaries] = useState<Record<string, ConvoSummary>>({});
   const [dropping, setDropping] = useState(false);
   const [kw, setKw] = useState<api.KeywordStatus | null>(null);
+  const [myProfile, setMyProfile] = useState<Profile | null>(null);
 
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<Theme>(
@@ -97,6 +98,9 @@ export default function App() {
   const loadKw = useCallback((node: string) => {
     api.keywordStatus(node).then(setKw).catch(() => setKw(null));
   }, []);
+  const reloadProfile = useCallback(() => {
+    api.getProfile().then(setMyProfile).catch(() => {});
+  }, []);
 
   const flushQueue = useCallback(
     (convo: string) => {
@@ -146,6 +150,7 @@ export default function App() {
       await reloadContacts();
       await reloadThreads();
       await reloadSummaries();
+      reloadProfile();
       unlisteners.push(
         await api.onMessageIn((m) => {
           reloadContacts();
@@ -172,6 +177,7 @@ export default function App() {
         }),
       );
       unlisteners.push(await api.onNetError((line) => setError(line)));
+      unlisteners.push(await api.onProfile(() => reloadContacts()));
       try {
         unlisteners.push(
           await getCurrentWebview().onDragDropEvent((event) => {
@@ -211,6 +217,7 @@ export default function App() {
       loadKw(splitConvo(convo).node);
       setUnread((prev) => (prev[convo] ? { ...prev, [convo]: 0 } : prev));
       doMarkRead(convo);
+      api.sendProfile(convo).catch(() => {});
       flushQueue(convo);
     },
     [loadMessages, loadKw, flushQueue],
@@ -349,6 +356,7 @@ export default function App() {
     <div className={`app ${showAi ? "with-ai" : ""}`} key={lang}>
       <Sidebar
         me={me}
+        myProfile={myProfile}
         threads={threads}
         contacts={contacts}
         selected={selected}
@@ -396,6 +404,7 @@ export default function App() {
           readReceipts={readReceipts}
           onReadReceipts={changeReadReceipts}
           auditPeer={selected}
+          onProfileSaved={reloadProfile}
           onClose={() => setSettingsOpen(false)}
         />
       )}

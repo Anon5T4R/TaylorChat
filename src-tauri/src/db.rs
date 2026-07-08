@@ -20,8 +20,10 @@ pub struct Db {
 #[serde(rename_all = "camelCase")]
 pub struct Contact {
     pub node_id: String,
-    pub nickname: String,
+    pub nickname: String, // apelido que EU dei
     pub added_ts: i64,
+    pub profile_name: Option<String>, // nome que ELE definiu (perfil dele)
+    pub avatar: Option<String>,       // caminho do avatar cacheado dele
 }
 
 #[derive(Serialize)]
@@ -76,6 +78,8 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
     // Palavra-chave por contato: `kw` = a minha (cifrada), `peer_kw_hash` = o hash que o par mandou.
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN kw BLOB", []);
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN peer_kw_hash TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN profile_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN avatar TEXT", []);
     // Multichat: cada conversa é uma linha aqui. `convo` = node_id (principal) ou
     // `node_id#threadId` (extra). A coluna `peer` das mensagens guarda esse `convo`.
     let _ = conn.execute(
@@ -133,7 +137,10 @@ macro_rules! with_conn {
 pub fn contacts_list(db: State<'_, Db>) -> Result<Vec<Contact>, String> {
     with_conn!(db, conn, {
         let mut stmt = conn
-            .prepare("SELECT node_id, nickname, added_ts FROM contacts ORDER BY nickname, node_id")
+            .prepare(
+                "SELECT node_id, nickname, added_ts, profile_name, avatar FROM contacts
+                 ORDER BY nickname, node_id",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
@@ -141,6 +148,8 @@ pub fn contacts_list(db: State<'_, Db>) -> Result<Vec<Contact>, String> {
                     node_id: r.get(0)?,
                     nickname: r.get(1)?,
                     added_ts: r.get(2)?,
+                    profile_name: r.get(3)?,
+                    avatar: r.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -402,6 +411,25 @@ pub fn set_peer_kw_hash(db: &Db, peer: &str, hash: &str) -> Result<(), String> {
         rusqlite::params![hash, peer],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Salva o perfil (nome + caminho do avatar) que um contato mandou. `avatar` vazio =
+/// mantém o atual (só atualizou o nome).
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn set_contact_profile(db: &Db, node: &str, name: &str, avatar: Option<&str>) -> Result<(), String> {
+    contact_ensure(db, node)?;
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute(
+        "UPDATE contacts SET profile_name=?1 WHERE node_id=?2",
+        rusqlite::params![name, node],
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(a) = avatar {
+        conn.execute("UPDATE contacts SET avatar=?1 WHERE node_id=?2", rusqlite::params![a, node])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
