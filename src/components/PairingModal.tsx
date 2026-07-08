@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import type { MyIdentity } from "../lib/types";
 
@@ -9,6 +9,14 @@ interface Props {
 }
 
 export function PairingModal({ me, onClose, onAdd }: Props) {
+  // Esc fecha o modal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const [invite, setInvite] = useState("");
   const [nickname, setNickname] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,8 +59,12 @@ export function PairingModal({ me, onClose, onAdd }: Props) {
         <div className="pair-grid">
           <section className="pair-mine">
             <h4>Meu convite</h4>
+            <p className="hint">Esta é a sua identidade. Para mandar o convite:</p>
             <div className="qr" dangerouslySetInnerHTML={{ __html: me.qrSvg }} />
-            <p className="hint">Mostre este QR ou compartilhe o código abaixo por um canal confiável.</p>
+            <p className="hint">
+              peça para a outra pessoa <strong>escanear este QR</strong> (ou colar o código abaixo)
+              no TaylorChat dela — aí vocês viram contatos. Compartilhe por um canal que você confia.
+            </p>
             <div className="invite-row">
               <code className="invite">{me.invite}</code>
               <button className="btn" onClick={copy}>

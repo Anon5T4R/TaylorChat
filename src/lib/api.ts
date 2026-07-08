@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import type { Contact, Message, MyIdentity, ParsedInvite } from "./types";
+import type { Contact, ConvoSummary, Message, MyIdentity, ParsedInvite } from "./types";
 
 // ── Identidade / pareamento ──────────────────────────────────────────────
 export const myIdentity = () => invoke<MyIdentity>("my_identity");
@@ -26,6 +26,16 @@ export const pickAndAttach = async (peer: string): Promise<Message | null> => {
   if (!path || typeof path !== "string") return null;
   return invoke<Message>("attach_file", { peer, path });
 };
+
+/// Envia um arquivo por caminho (usado pelo drag & drop).
+export const attachPath = (peer: string, path: string) =>
+  invoke<Message>("attach_file", { peer, path });
+
+/// Última mensagem de cada conversa (prévia + ordenação da sidebar).
+export const conversationsSummary = () => invoke<ConvoSummary[]>("conversations_summary");
+
+/// Reenvia o que ficou na fila pra um par; devolve quantas saíram.
+export const resendQueued = (peer: string) => invoke<number>("resend_queued", { peer });
 
 /// Abre um anexo salvo no app com o programa padrão do SO.
 export const openAttachment = (localPath: string) => openPath(localPath);

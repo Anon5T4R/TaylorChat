@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "./lib/api";
-import type { Contact, Message, MyIdentity } from "./lib/types";
+import type { Contact, ConvoSummary, Message, MyIdentity } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { PairingModal } from "./components/PairingModal";
@@ -16,9 +17,10 @@ export default function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unread, setUnread] = useState<Record<string, number>>({});
-  const [activity, setActivity] = useState<Record<string, number>>({});
+  const [summaries, setSummaries] = useState<Record<string, ConvoSummary>>({});
+  const [dropping, setDropping] = useState(false);
 
-  // ref pra o listener de rede não ler `selected` desatualizado
+  // ref pra listeners de rede não lerem `selected` desatualizado
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selected;
 
@@ -30,6 +32,15 @@ export default function App() {
     }
   }, []);
 
+  const reloadSummaries = useCallback(async () => {
+    try {
+      const list = await api.conversationsSummary();
+      setSummaries(Object.fromEntries(list.map((s) => [s.peer, s])));
+    } catch {
+      /* prévia é cosmética — não vira erro na tela */
+    }
+  }, []);
+
   const loadMessages = useCallback(async (peer: string) => {
     try {
       setMessages(await api.messagesList(peer));
@@ -38,7 +49,20 @@ export default function App() {
     }
   }, []);
 
-  // boot: identidade + contatos + listeners (mensagens recebidas, recibos de leitura)
+  /// Tenta despachar a fila do par; se algo saiu e a conversa está aberta, recarrega.
+  const flushQueue = useCallback(
+    (peer: string) => {
+      api
+        .resendQueued(peer)
+        .then((n) => {
+          if (n > 0 && peer === selectedRef.current) loadMessages(peer);
+        })
+        .catch(() => {});
+    },
+    [loadMessages],
+  );
+
+  // boot: identidade + contatos + prévias + listeners (mensagens, recibos, drag&drop)
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     (async () => {
@@ -48,15 +72,18 @@ export default function App() {
         setError(String(e));
       }
       await reloadContacts();
+      await reloadSummaries();
       unlisteners.push(
         await api.onMessageIn((m) => {
-          setActivity((prev) => ({ ...prev, [m.peer]: m.ts }));
+          reloadSummaries();
           if (m.peer === selectedRef.current) {
             setMessages((prev) => [...prev, m]);
             api.markRead(m.peer).catch(() => {});
           } else {
             setUnread((prev) => ({ ...prev, [m.peer]: (prev[m.peer] ?? 0) + 1 }));
           }
+          // o par acabou de falar comigo → está online: despacha o que ficou na fila
+          flushQueue(m.peer);
         }),
       );
       unlisteners.push(
@@ -64,9 +91,37 @@ export default function App() {
           if (peer === selectedRef.current) loadMessages(peer);
         }),
       );
+      // Drag & drop de arquivos na conversa (paths vêm do webview do Tauri).
+      try {
+        unlisteners.push(
+          await getCurrentWebview().onDragDropEvent((event) => {
+            const p = event.payload as { type: string; paths?: string[] };
+            if (p.type === "enter" || p.type === "over") setDropping(true);
+            if (p.type === "leave") setDropping(false);
+            if (p.type === "drop") {
+              setDropping(false);
+              const peer = selectedRef.current;
+              if (!peer || !p.paths?.length) return;
+              (async () => {
+                for (const path of p.paths!.slice(0, 10)) {
+                  try {
+                    const msg = await api.attachPath(peer, path);
+                    if (peer === selectedRef.current) setMessages((prev) => [...prev, msg]);
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                }
+                reloadSummaries();
+              })();
+            }
+          }),
+        );
+      } catch {
+        /* fora do Tauri (preview) não há drag&drop nativo */
+      }
     })();
     return () => unlisteners.forEach((u) => u());
-  }, [reloadContacts, loadMessages]);
+  }, [reloadContacts, reloadSummaries, loadMessages, flushQueue]);
 
   const handleSelect = useCallback(
     (nodeId: string) => {
@@ -74,8 +129,9 @@ export default function App() {
       loadMessages(nodeId);
       setUnread((prev) => (prev[nodeId] ? { ...prev, [nodeId]: 0 } : prev));
       api.markRead(nodeId).catch(() => {});
+      flushQueue(nodeId);
     },
-    [loadMessages],
+    [loadMessages, flushQueue],
   );
 
   const handleSend = useCallback(
@@ -84,12 +140,12 @@ export default function App() {
       try {
         const msg = await api.sendMessage(selected, body);
         setMessages((prev) => [...prev, msg]);
-        setActivity((prev) => ({ ...prev, [msg.peer]: msg.ts }));
+        reloadSummaries();
       } catch (e) {
         setError(String(e));
       }
     },
-    [selected],
+    [selected, reloadSummaries],
   );
 
   const handleAttach = useCallback(async () => {
@@ -98,12 +154,12 @@ export default function App() {
       const msg = await api.pickAndAttach(selected);
       if (msg) {
         setMessages((prev) => [...prev, msg]);
-        setActivity((prev) => ({ ...prev, [msg.peer]: msg.ts }));
+        reloadSummaries();
       }
     } catch (e) {
       setError(String(e));
     }
-  }, [selected]);
+  }, [selected, reloadSummaries]);
 
   const handleRemoveContact = useCallback(async () => {
     if (!selected) return;
@@ -143,7 +199,7 @@ export default function App() {
   const selectedContact = contacts.find((c) => c.nodeId === selected) ?? null;
   const showAi = aiOpen && !!selectedContact;
   const sortedContacts = [...contacts].sort(
-    (a, b) => (activity[b.nodeId] ?? 0) - (activity[a.nodeId] ?? 0),
+    (a, b) => (summaries[b.nodeId]?.ts ?? 0) - (summaries[a.nodeId]?.ts ?? 0),
   );
 
   return (
@@ -153,6 +209,7 @@ export default function App() {
         contacts={sortedContacts}
         selected={selected}
         unread={unread}
+        summaries={summaries}
         onSelect={handleSelect}
         onOpenPairing={() => setPairingOpen(true)}
       />
@@ -178,6 +235,11 @@ export default function App() {
       )}
       {pairingOpen && me && (
         <PairingModal me={me} onClose={() => setPairingOpen(false)} onAdd={handleAddContact} />
+      )}
+      {dropping && selected && (
+        <div className="drop-overlay">
+          <div className="drop-inner">📎 Solte para enviar</div>
+        </div>
       )}
       {error && (
         <div className="toast" onClick={() => setError(null)} role="alert">

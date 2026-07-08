@@ -21,6 +21,14 @@ export interface FileMeta {
   localPath?: string;
 }
 
+export interface ConvoSummary {
+  peer: string;
+  kind: "text" | "file";
+  body: string; // prévia (arquivo vira "📎 nome")
+  ts: number;
+  direction: "out" | "in";
+}
+
 export interface MyIdentity {
   nodeId: string;
   invite: string;

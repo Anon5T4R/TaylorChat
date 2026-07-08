@@ -40,7 +40,7 @@ pub async fn send_file(
     _peer: &str,
     _filename: &str,
     _mime: &str,
-    _bytes: &[u8],
+    _source_path: &str,
 ) -> Result<(), String> {
     Err("envio de arquivo requer build com --features p2p (Fase 5)".into())
 }
@@ -56,10 +56,11 @@ mod imp {
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
     use base64::Engine;
-    use iroh::endpoint::{RecvStream, SendStream};
+    use iroh::endpoint::{Connection, RecvStream, SendStream};
     use iroh::{Endpoint, NodeId, SecretKey};
     use rand::RngCore;
     use serde_json::{json, Value};
+    use std::io::{Read, Write};
     use std::sync::{Mutex, OnceLock};
     use tauri::{Emitter, Manager};
     use vodozemac::olm::Account;
@@ -67,8 +68,9 @@ mod imp {
     static ENDPOINT: OnceLock<Endpoint> = OnceLock::new();
     static ACCOUNT: OnceLock<Mutex<Account>> = OnceLock::new();
 
-    const MAX_FRAME: usize = 1 << 20; // 1 MiB por frame de cabeçalho
-    const MAX_FILE: usize = 100 * 1024 * 1024; // 100 MiB por anexo (primeiro corte)
+    // Cabeçalhos são pequenos; os frames de chunk carregam ~1 MiB comprimido+cifrado.
+    const MAX_FRAME: usize = 4 << 20; // 4 MiB (teto de um frame)
+    const CHUNK: usize = 1 << 20; // 1 MiB de arquivo cru por pedaço
 
     fn b64(bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -139,15 +141,6 @@ mod imp {
         r.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
         Ok(buf)
     }
-    async fn read_n(r: &mut RecvStream, n: usize) -> Result<Vec<u8>, String> {
-        if n > MAX_FILE {
-            return Err("anexo grande demais".into());
-        }
-        let mut buf = vec![0u8; n];
-        r.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
-        Ok(buf)
-    }
-
     fn account_locked() -> Result<std::sync::MutexGuard<'static, Account>, String> {
         ACCOUNT
             .get()
@@ -159,29 +152,8 @@ mod imp {
     // ── envio (unificado texto/arquivo) ────────────────────────────────
     pub async fn send_text(app: &tauri::AppHandle, peer: &str, body: &str) -> Result<(), String> {
         let inner = json!({ "k": "text", "body": body }).to_string();
-        send_payload(app, peer, &inner, None).await
-    }
-
-    pub async fn send_file(
-        app: &tauri::AppHandle,
-        peer: &str,
-        filename: &str,
-        mime: &str,
-        bytes: &[u8],
-    ) -> Result<(), String> {
-        let comp = crate::media::compress(bytes)?;
-        let mut file_key = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut file_key);
-        let ct = crate::crypto::encrypt(&file_key, &comp)?;
-        let inner = json!({
-            "k": "file",
-            "filename": filename,
-            "mime": mime,
-            "size": bytes.len(),
-            "fileKey": b64(&file_key),
-        })
-        .to_string();
-        send_payload(app, peer, &inner, Some(&ct)).await
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
     }
 
     /// Recibo de leitura: avisa o par que li as mensagens dele. Só faz sentido se já
@@ -192,15 +164,61 @@ mod imp {
             return Ok(());
         }
         let inner = json!({ "k": "read" }).to_string();
-        send_payload(app, peer, &inner, None).await
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
     }
 
-    async fn send_payload(
+    /// Envia um arquivo **em streaming**: metadados (com a chave de uso único) vão no
+    /// cabeçalho cifrado pelo ratchet; o conteúdo segue em pedaços de 1 MiB, cada um
+    /// comprimido (zstd) + cifrado. Nada do arquivo inteiro fica em RAM → arquivos
+    /// grandes ok. Lê do disco em `source_path`.
+    pub async fn send_file(
+        app: &tauri::AppHandle,
+        peer: &str,
+        filename: &str,
+        mime: &str,
+        source_path: &str,
+    ) -> Result<(), String> {
+        let size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
+        let mut file_key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut file_key);
+        let inner = json!({
+            "k": "file",
+            "filename": filename,
+            "mime": mime,
+            "size": size,
+            "fileKey": b64(&file_key),
+        })
+        .to_string();
+        let (_conn, mut s, mut r) =
+            send_header(app, peer, &inner, json!({ "streamed": true })).await?;
+
+        let mut f = std::fs::File::open(source_path)
+            .map_err(|e| format!("falha ao abrir '{source_path}': {e}"))?;
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            let n = f.read(&mut buf).map_err(|e| format!("falha ao ler anexo: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            let comp = crate::media::compress(&buf[..n])?;
+            let enc = crate::crypto::encrypt(&file_key, &comp)?;
+            write_frame(&mut s, &enc).await?;
+        }
+        write_frame(&mut s, &[]).await?; // frame vazio = fim
+        ack(&mut s, &mut r).await
+    }
+
+    /// Abre a conexão, faz o handshake/cifra do conteúdo interno e escreve o cabeçalho
+    /// (mesclando `extra`, ex.: `{"streamed":true}`). Devolve os streams abertos pro
+    /// caller mandar o payload (chunks) e ler o ACK. A `Connection` é devolvida pra
+    /// ficar viva até o fim do envio.
+    async fn send_header(
         app: &tauri::AppHandle,
         peer: &str,
         inner_json: &str,
-        ct: Option<&[u8]>,
-    ) -> Result<(), String> {
+        extra: Value,
+    ) -> Result<(Connection, SendStream, RecvStream), String> {
         let endpoint = ENDPOINT.get().ok_or("rede não iniciada".to_string())?;
         let db = app.state::<Db>();
         let bytes = crate::identity::hex_decode_32(peer)?;
@@ -208,8 +226,7 @@ mod imp {
         let conn = endpoint.connect(node_id, ALPN).await.map_err(|e| e.to_string())?;
         let (mut send_s, mut recv_s) = conn.open_bi().await.map_err(|e| e.to_string())?;
 
-        let ct_len = ct.map(|c| c.len());
-        if let Some(sbytes) = crate::db::session_get(&db, peer)? {
+        let mut header = if let Some(sbytes) = crate::db::session_get(&db, peer)? {
             // Sessão existente → mensagem normal.
             let wire = {
                 let mut session = ratchet::session_from_bytes(&sbytes)?;
@@ -217,11 +234,7 @@ mod imp {
                 crate::db::session_set(&db, peer, &ratchet::session_to_bytes(&session))?;
                 w
             };
-            let mut header = json!({ "t": "msg", "olm": b64(&wire) });
-            if let Some(n) = ct_len {
-                header["ctLen"] = json!(n);
-            }
-            write_frame(&mut send_s, &serde_json::to_vec(&header).map_err(|e| e.to_string())?).await?;
+            json!({ "t": "msg", "olm": b64(&wire) })
         } else {
             // Par novo → pede bundle, abre sessão (X3DH) e manda a PreKey.
             let req = serde_json::to_vec(&json!({ "t": "req_prekey" })).map_err(|e| e.to_string())?;
@@ -238,17 +251,19 @@ mod imp {
                 (session, wire, acct.curve25519_key().to_base64())
             };
             crate::db::session_set(&db, peer, &ratchet::session_to_bytes(&session))?;
-            let mut header = json!({ "t": "msg_prekey", "sender_identity": our_identity, "olm": b64(&wire) });
-            if let Some(n) = ct_len {
-                header["ctLen"] = json!(n);
+            json!({ "t": "msg_prekey", "sender_identity": our_identity, "olm": b64(&wire) })
+        };
+        if let Value::Object(extra) = extra {
+            for (k, val) in extra {
+                header[k] = val;
             }
-            write_frame(&mut send_s, &serde_json::to_vec(&header).map_err(|e| e.to_string())?).await?;
         }
+        write_frame(&mut send_s, &serde_json::to_vec(&header).map_err(|e| e.to_string())?).await?;
+        Ok((conn, send_s, recv_s))
+    }
 
-        if let Some(c) = ct {
-            send_s.write_all(c).await.map_err(|e| e.to_string())?;
-        }
-        // Espera o ACK do receptor (confirma que processou) antes de fechar.
+    /// Espera o ACK do receptor (confirma que processou tudo) e fecha o lado de envio.
+    async fn ack(send_s: &mut SendStream, recv_s: &mut RecvStream) -> Result<(), String> {
         let mut ack = [0u8; 1];
         recv_s.read_exact(&mut ack).await.map_err(|e| format!("sem confirmação de entrega: {e}"))?;
         send_s.finish().map_err(|e| e.to_string())?;
@@ -326,11 +341,6 @@ mod imp {
     ) -> Result<(), String> {
         let is_prekey = v["t"].as_str() == Some("msg_prekey");
         let olm = unb64(v["olm"].as_str().ok_or("faltou olm")?)?;
-        // Lê o anexo (se anunciado) ANTES de decifrar — são bytes crus no stream.
-        let ct = match v["ctLen"].as_u64() {
-            Some(n) => Some(read_n(recv_s, n as usize).await?),
-            None => None,
-        };
 
         let inner = if is_prekey {
             let sender_identity = v["sender_identity"].as_str().ok_or("faltou sender_identity")?;
@@ -365,10 +375,23 @@ mod imp {
                 let key_vec = unb64(iv["fileKey"].as_str().ok_or("arquivo sem chave")?)?;
                 let file_key: [u8; 32] =
                     key_vec.try_into().map_err(|_| "chave de arquivo inválida".to_string())?;
-                let ctb = ct.ok_or("arquivo sem conteúdo")?;
-                let comp = crate::crypto::decrypt(&file_key, &ctb)?;
-                let data = crate::media::decompress(&comp)?;
-                let local_path = crate::media::save_attachment(app, filename, &data)?;
+
+                // Recebe os pedaços e grava incremental no disco (sem segurar o arquivo
+                // inteiro em RAM). Frame vazio = fim.
+                let dest = crate::media::unique_dest(app, filename)?;
+                let mut out = std::fs::File::create(&dest)
+                    .map_err(|e| format!("falha ao criar '{}': {e}", dest.display()))?;
+                loop {
+                    let frame = read_frame(recv_s).await?;
+                    if frame.is_empty() {
+                        break;
+                    }
+                    let comp = crate::crypto::decrypt(&file_key, &frame)?;
+                    let data = crate::media::decompress(&comp)?;
+                    out.write_all(&data).map_err(|e| format!("falha ao gravar anexo: {e}"))?;
+                }
+                out.flush().map_err(|e| e.to_string())?;
+                let local_path = dest.to_string_lossy().to_string();
                 let meta = json!({
                     "filename": filename, "mime": mime, "size": size, "localPath": local_path,
                 })

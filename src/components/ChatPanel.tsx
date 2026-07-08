@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { openAttachment } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
+import { avatarColor, dayLabel, shortId } from "../lib/ui";
 
 interface Props {
   contact: Contact | null;
@@ -15,10 +17,6 @@ interface Props {
   onRemove: () => void;
 }
 
-function shortId(id: string): string {
-  return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
-}
-
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -30,6 +28,8 @@ function stateGlyph(m: Message): string {
   switch (m.state) {
     case "queued":
       return "🕒";
+    case "failed":
+      return "⚠";
     case "sent":
       return "✓";
     case "delivered":
@@ -41,6 +41,7 @@ function stateGlyph(m: Message): string {
 }
 
 function FileBubble({ body }: { body: string }) {
+  const [imgFail, setImgFail] = useState(false);
   let meta: FileMeta | null = null;
   try {
     meta = JSON.parse(body) as FileMeta;
@@ -49,6 +50,21 @@ function FileBubble({ body }: { body: string }) {
   }
   if (!meta) return <span className="bubble-body">⟨anexo ilegível⟩</span>;
   const path = meta.localPath;
+
+  // Imagem com cópia local → preview inline (clica pra abrir no visualizador do SO).
+  if (path && meta.mime.startsWith("image/") && !imgFail) {
+    return (
+      <img
+        className="img-att"
+        src={convertFileSrc(path)}
+        alt={meta.filename}
+        title={`${meta.filename} — abrir`}
+        onError={() => setImgFail(true)}
+        onClick={() => openAttachment(path)}
+      />
+    );
+  }
+
   return (
     <button
       className="file-att"
@@ -102,10 +118,15 @@ export function ChatPanel({
     onDraftChange("");
   };
 
+  const rows = Math.min(6, Math.max(1, draft.split("\n").length));
+  let lastDay = "";
+
   return (
     <main className="chat">
       <header className="chat-head">
-        <span className="avatar">{(contact.nickname || contact.nodeId).slice(0, 1).toUpperCase()}</span>
+        <span className="avatar" style={{ background: avatarColor(contact.nodeId) }}>
+          {(contact.nickname || contact.nodeId).slice(0, 1).toUpperCase()}
+        </span>
         <div className="chat-head-body">
           <strong>{contact.nickname || shortId(contact.nodeId)}</strong>
           <code>{shortId(contact.nodeId)}</code>
@@ -141,26 +162,53 @@ export function ChatPanel({
       </header>
 
       <div className="messages">
-        {messages.map((m) => (
-          <div key={m.id} className={`bubble ${m.direction === "out" ? "out" : "in"}`}>
-            {m.kind === "file" ? <FileBubble body={m.body} /> : <span className="bubble-body">{m.body}</span>}
-            <span className="bubble-meta">
-              {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{" "}
-              <span className={`tick ${m.state === "read" ? "read" : ""}`}>{stateGlyph(m)}</span>
-            </span>
-          </div>
-        ))}
+        {messages.map((m) => {
+          const day = dayLabel(m.ts);
+          const sep = day !== lastDay;
+          lastDay = day;
+          return (
+            <Fragment key={m.id}>
+              {sep && (
+                <div className="day-sep">
+                  <span>{day}</span>
+                </div>
+              )}
+              <div className={`bubble ${m.direction === "out" ? "out" : "in"}`}>
+                {m.kind === "file" ? (
+                  <FileBubble body={m.body} />
+                ) : (
+                  <span className="bubble-body">{m.body}</span>
+                )}
+                <span className="bubble-meta">
+                  {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{" "}
+                  <span
+                    className={`tick ${m.state === "read" ? "read" : ""}`}
+                    title={
+                      m.state === "queued"
+                        ? "Na fila — sai quando o contato estiver alcançável"
+                        : m.state === "failed"
+                          ? "Falhou — anexo sem cópia local"
+                          : m.state
+                    }
+                  >
+                    {stateGlyph(m)}
+                  </span>
+                </span>
+              </div>
+            </Fragment>
+          );
+        })}
         <div ref={endRef} />
       </div>
 
       <footer className="composer">
-        <button className="btn-attach" title="Anexar arquivo" onClick={onAttach}>
+        <button className="btn-attach" title="Anexar arquivo (ou arraste pra cá)" onClick={onAttach}>
           📎
         </button>
         <textarea
           value={draft}
-          placeholder="Escreva uma mensagem…"
-          rows={1}
+          placeholder="Escreva uma mensagem…  (Enter envia, Shift+Enter quebra linha)"
+          rows={rows}
           onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

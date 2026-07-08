@@ -259,6 +259,79 @@ pub fn message_set_state(db: State<'_, Db>, id: i64, state: String) -> Result<()
     set_state(&db, id, &state)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvoSummary {
+    pub peer: String,
+    pub kind: String,
+    pub body: String, // texto truncado; arquivo vira "📎 nome"
+    pub ts: i64,
+    pub direction: String,
+}
+
+/// Última mensagem de cada conversa (pra prévia + ordenação da sidebar).
+#[tauri::command(async)]
+pub fn conversations_summary(db: State<'_, Db>) -> Result<Vec<ConvoSummary>, String> {
+    let raw: Vec<(String, String, Vec<u8>, i64, String)> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.peer, m.kind, m.body, m.ts, m.direction FROM messages m
+                 JOIN (SELECT peer, MAX(id) AS mid FROM messages GROUP BY peer) l ON m.id = l.mid",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
+    Ok(raw
+        .into_iter()
+        .map(|(peer, kind, blob, ts, direction)| {
+            let text = dec_text(&db, &blob);
+            let body = if kind == "file" {
+                let name = serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|v| v["filename"].as_str().map(String::from))
+                    .unwrap_or_else(|| "arquivo".into());
+                format!("📎 {name}")
+            } else {
+                text.chars().take(90).collect()
+            };
+            ConvoSummary { peer, kind, body, ts, direction }
+        })
+        .collect())
+}
+
+/// Mensagens de saída ainda na fila (decifradas) pra um par — pro reenvio.
+pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
+    let raw: Vec<(i64, String, Vec<u8>, i64)> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, body, ts FROM messages
+                 WHERE peer=?1 AND direction='out' AND state='queued' ORDER BY ts, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![peer], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
+    Ok(raw
+        .into_iter()
+        .map(|(id, kind, blob, ts)| Message {
+            id,
+            peer: peer.into(),
+            direction: "out".into(),
+            kind,
+            body: dec_text(db, &blob),
+            ts,
+            state: "queued".into(),
+        })
+        .collect())
+}
+
 /// Marca como `read` todas as minhas mensagens de saída pra um par (recibo de leitura).
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub fn mark_out_read(db: &Db, peer: &str) -> Result<(), String> {

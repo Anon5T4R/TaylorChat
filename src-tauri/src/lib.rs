@@ -59,20 +59,23 @@ async fn attach_file(
     peer: String,
     path: String,
 ) -> Result<Message, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("falha ao ler '{path}': {e}"))?;
+    let size = std::fs::metadata(&path)
+        .map_err(|e| format!("falha ao ler '{path}': {e}"))?
+        .len();
     let filename = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("arquivo")
         .to_string();
     let mime = media::guess_mime(&filename);
-    let local_path = media::save_attachment(&app, &filename, &bytes)?;
+    // Cópia local (streaming, sem RAM) pra reabrir/reenviar; o envio lê dela.
+    let local_path = media::copy_attachment(&app, &filename, &path)?;
     let meta = serde_json::json!({
-        "filename": filename, "mime": mime, "size": bytes.len(), "localPath": local_path,
+        "filename": filename, "mime": mime, "size": size, "localPath": local_path,
     })
     .to_string();
     let mut msg = db::record_file(&db, &peer, "out", &meta, "queued")?;
-    match net::send_file(&app, &peer, &filename, &mime, &bytes).await {
+    match net::send_file(&app, &peer, &filename, &mime, &local_path).await {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -90,6 +93,46 @@ async fn attach_file(
 #[tauri::command]
 async fn mark_read(app: tauri::AppHandle, peer: String) -> Result<(), String> {
     net::send_read(&app, &peer).await
+}
+
+/// Tenta reenviar o que ficou na fila (`queued`) pra um par. Para no primeiro erro
+/// (par continua offline — evita N timeouts). Devolve quantas saíram.
+#[tauri::command]
+async fn resend_queued(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    peer: String,
+) -> Result<u32, String> {
+    let queued = db::queued_out(&db, &peer)?;
+    let mut sent = 0u32;
+    for m in queued {
+        let ok = if m.kind == "file" {
+            // corpo = JSON de metadados; a cópia local é a fonte do reenvio
+            let meta: serde_json::Value =
+                serde_json::from_str(&m.body).map_err(|e| format!("anexo corrompido: {e}"))?;
+            let (Some(path), Some(filename), Some(mime)) = (
+                meta["localPath"].as_str(),
+                meta["filename"].as_str(),
+                meta["mime"].as_str(),
+            ) else {
+                db::set_state(&db, m.id, "failed")?; // sem cópia local, não dá pra reenviar
+                continue;
+            };
+            if !std::path::Path::new(path).exists() {
+                db::set_state(&db, m.id, "failed")?; // cópia sumiu
+                continue;
+            }
+            net::send_file(&app, &peer, filename, mime, path).await.is_ok()
+        } else {
+            net::send_text(&app, &peer, &m.body).await.is_ok()
+        };
+        if !ok {
+            break;
+        }
+        db::set_state(&db, m.id, "delivered")?;
+        sent += 1;
+    }
+    Ok(sent)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -123,6 +166,7 @@ pub fn run() {
             send_message,
             attach_file,
             mark_read,
+            resend_queued,
             pairing::my_identity,
             pairing::parse_invite,
             db::contacts_list,
@@ -130,6 +174,7 @@ pub fn run() {
             db::contact_remove,
             db::messages_list,
             db::message_set_state,
+            db::conversations_summary,
             llm::list_models,
             llm::start_llm,
             llm::stop_llm,
