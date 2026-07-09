@@ -38,6 +38,94 @@ pub struct Message {
     pub state: String, // out: queued|sent|delivered|read ; in: received
 }
 
+/// Consolida o WAL no arquivo principal (TRUNCATE zera o diário). Sem isso os
+/// dados podem viver indefinidamente só no WAL — e um WAL descartado (crash,
+/// -shm corrompido) vira perda total, como já aconteceu uma vez.
+fn checkpoint_conn(conn: &Connection) {
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+}
+
+/// Checkpoint best-effort de fora dos comandos (ex.: saída do app).
+pub fn checkpoint(db: &Db) {
+    if let Ok(guard) = db.conn.lock() {
+        if let Some(conn) = guard.as_ref() {
+            checkpoint_conn(conn);
+        }
+    }
+}
+
+/// Abre o banco validando a integridade. Se o quick_check reprovar, põe os
+/// arquivos de lado (.corrupt-<ts>, preservados pra forense) e recomeça do
+/// zero — app utilizável é melhor que banco travado.
+fn open_checked(path: &std::path::Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|e| format!("falha ao abrir banco: {e}"))?;
+    let ok: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+        .unwrap_or_else(|_| "falhou".into());
+    if ok == "ok" {
+        return Ok(conn);
+    }
+    eprintln!("[taylorchat] banco reprovou no quick_check ('{ok}'); movendo pra .corrupt e recriando");
+    drop(conn);
+    let ts = now_ms();
+    for suffix in ["", "-wal", "-shm"] {
+        let f = format!("{}{suffix}", path.display());
+        if std::path::Path::new(&f).exists() {
+            let _ = std::fs::rename(&f, format!("{}.corrupt-{ts}{suffix}", path.display()));
+        }
+    }
+    Connection::open(path).map_err(|e| format!("falha ao recriar banco: {e}"))
+}
+
+/// "aaaammdd" a partir de segundos unix (algoritmo civil, sem dependência de tz).
+fn date_stamp(secs: i64) -> String {
+    let z = secs.div_euclid(86400) + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}{m:02}{d:02}")
+}
+
+/// Backup diário rotativo (mantém os 3 mais recentes) em <dados>/backups/.
+/// `VACUUM INTO` gera uma cópia consistente mesmo com o banco em uso.
+fn daily_backup(conn: &Connection, dir: &std::path::Path) {
+    let backups = dir.join("backups");
+    if std::fs::create_dir_all(&backups).is_err() {
+        return;
+    }
+    let target = backups.join(format!("chat-{}.db", date_stamp(now_ms() / 1000)));
+    if target.exists() {
+        return;
+    }
+    if let Err(e) =
+        conn.execute("VACUUM INTO ?1", rusqlite::params![target.to_string_lossy()])
+    {
+        eprintln!("[taylorchat] backup diário falhou: {e}");
+        return;
+    }
+    let mut old: Vec<_> = std::fs::read_dir(&backups)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().starts_with("chat-"))
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    old.sort();
+    while old.len() > 3 {
+        let _ = std::fs::remove_file(old.remove(0));
+    }
+}
+
 /// Abre (criando se preciso) o banco e guarda a chave de cifra derivada da identidade.
 pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), String> {
     let dir = app
@@ -46,9 +134,11 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
         .map_err(|e| format!("sem pasta de dados: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("falha ao criar '{}': {e}", dir.display()))?;
     let path = dir.join("chat.db");
-    let conn = Connection::open(&path).map_err(|e| format!("falha ao abrir banco: {e}"))?;
+    let conn = open_checked(&path)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=FULL;
+         PRAGMA wal_autocheckpoint=100;
          CREATE TABLE IF NOT EXISTS contacts (
              node_id  TEXT PRIMARY KEY,
              nickname TEXT NOT NULL DEFAULT '',
@@ -98,6 +188,10 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
          SELECT node_id, '', added_ts FROM contacts",
         [],
     );
+    // Profilaxia: tudo que estiver só no WAL vai pro arquivo principal agora,
+    // e uma cópia do dia fica em backups/ (rotativo, 3 últimos).
+    checkpoint_conn(&conn);
+    daily_backup(&conn, &dir);
     let state = app.state::<Db>();
     *state.conn.lock().map_err(|_| "estado do banco corrompido")? = Some(conn);
     *state.key.lock().map_err(|_| "estado do banco corrompido")? =
@@ -184,6 +278,8 @@ pub fn contact_add(db: State<'_, Db>, node_id: String, nickname: String) -> Resu
             rusqlite::params![node_id, now_ms()],
         )
         .map_err(|e| e.to_string())?;
+        // Contato é escrita rara e preciosa: consolida no arquivo principal já.
+        checkpoint_conn(conn);
         Ok(())
     })
 }
@@ -193,6 +289,7 @@ pub fn contact_remove(db: State<'_, Db>, node_id: String) -> Result<(), String> 
     with_conn!(db, conn, {
         conn.execute("DELETE FROM contacts WHERE node_id=?1", rusqlite::params![node_id])
             .map_err(|e| e.to_string())?;
+        checkpoint_conn(conn);
         Ok(())
     })
 }
@@ -244,6 +341,7 @@ pub fn contact_ensure(db: &Db, node_id: &str) -> Result<(), String> {
         rusqlite::params![node_id, now_ms()],
     )
     .map_err(|e| e.to_string())?;
+    checkpoint_conn(conn);
     Ok(())
 }
 
@@ -278,6 +376,7 @@ pub fn thread_ensure(db: &Db, convo: &str, name: &str) -> Result<(), String> {
         rusqlite::params![convo, name, now_ms()],
     )
     .map_err(|e| e.to_string())?;
+    checkpoint_conn(conn);
     Ok(())
 }
 
@@ -296,6 +395,7 @@ pub fn thread_delete(db: State<'_, Db>, convo: String) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM threads WHERE convo=?1", rusqlite::params![convo])
             .map_err(|e| e.to_string())?;
+        checkpoint_conn(conn);
         Ok(())
     })
 }

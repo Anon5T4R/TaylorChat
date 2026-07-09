@@ -387,10 +387,15 @@ pub fn run() {
 
             if let Some(win) = app.get_webview_window("main") {
                 let w = win.clone();
+                let handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = w.hide();
+                        // Indo pra bandeja (o app pode ficar dias assim): consolida o WAL.
+                        if let Some(db) = handle.try_state::<Db>() {
+                            db::checkpoint(&db);
+                        }
                     }
                 });
             }
@@ -434,6 +439,10 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // Última chance de consolidar o WAL antes do processo morrer.
+                if let Some(db) = app_handle.try_state::<Db>() {
+                    db::checkpoint(&db);
+                }
                 if let Some(state) = app_handle.try_state::<Mutex<llm::LlmState>>() {
                     if let Ok(mut s) = state.lock() {
                         if let Some(child) = s.child.as_mut() {
