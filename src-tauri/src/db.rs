@@ -286,9 +286,24 @@ pub fn contact_add(db: State<'_, Db>, node_id: String, nickname: String) -> Resu
 
 #[tauri::command(async)]
 pub fn contact_remove(db: State<'_, Db>, node_id: String) -> Result<(), String> {
+    let node_id = node_id.trim().to_lowercase();
+    // Remove o contato E tudo que pende dele: a conversa principal (convo = node_id) e
+    // as extras (node_id#...), com suas mensagens. Sem isso ficariam "conversas
+    // fantasma" na aba Conversas sem dono. `like` casa a principal e as extras.
+    let like = format!("{node_id}#%");
     with_conn!(db, conn, {
         conn.execute("DELETE FROM contacts WHERE node_id=?1", rusqlite::params![node_id])
             .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM messages WHERE peer=?1 OR peer LIKE ?2",
+            rusqlite::params![node_id, like],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM threads WHERE convo=?1 OR convo LIKE ?2",
+            rusqlite::params![node_id, like],
+        )
+        .map_err(|e| e.to_string())?;
         checkpoint_conn(conn);
         Ok(())
     })

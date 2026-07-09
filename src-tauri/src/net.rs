@@ -63,6 +63,9 @@ pub const EVENT_KEYWORD: &str = "keyword";
 /// Perfil (nome/foto) do par chegou/mudou: a UI recarrega os contatos.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_PROFILE: &str = "profile";
+/// Presença de um par mudou (online/offline) — a UI atualiza a bolinha em tempo real.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_PRESENCE: &str = "presence";
 #[cfg(feature = "p2p")]
 const ALPN: &[u8] = b"taylorchat/msg/0";
 
@@ -98,6 +101,10 @@ pub fn is_up() -> bool {
     false
 }
 #[cfg(not(feature = "p2p"))]
+pub async fn watch(_app: &tauri::AppHandle, _peer: &str) -> bool {
+    false
+}
+#[cfg(not(feature = "p2p"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_file(
     _app: &tauri::AppHandle,
@@ -117,16 +124,17 @@ pub async fn send_file(
 // ─────────────────────────────── build com iroh ───────────────────────────────
 #[cfg(feature = "p2p")]
 mod imp {
-    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_PROFILE, EVENT_RECEIPTS};
+    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_PRESENCE, EVENT_PROFILE, EVENT_RECEIPTS};
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
     use base64::Engine;
     use iroh::endpoint::{Connection, RecvStream, SendStream};
     use iroh::{Endpoint, NodeId, SecretKey};
     use serde_json::{json, Value};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Duration;
     use tauri::async_runtime::Mutex as AsyncMutex;
     use tauri::{Emitter, Manager};
     use vodozemac::olm::Account;
@@ -137,11 +145,140 @@ mod imp {
     // contato — sem isso, mensagens concorrentes leem-e-gravam o mesmo estado do
     // ratchet ao mesmo tempo e o dessincronizam (a mensagem seguinte não decifra).
     static PEER_LOCKS: OnceLock<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+    // Conexões QUIC QUENTES por contato: abre uma vez e reusa em TODA mensagem (cada
+    // mensagem é um stream bi novo — o QUIC multiplexa). Evita refazer descoberta +
+    // handshake a cada envio e mantém o canal vivo pro heartbeat de presença.
+    static CONNS: OnceLock<Mutex<HashMap<String, Connection>>> = OnceLock::new();
+    // Contatos com um watcher de presença já rodando (evita duplicar tarefas).
+    static WATCHING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    const HEARTBEAT: Duration = Duration::from_secs(12); // intervalo do ping
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(6); // prazo de connect/ping
+    const RECONNECT: Duration = Duration::from_secs(15); // espera antes de re-tentar
 
     fn peer_lock(peer: &str) -> Arc<AsyncMutex<()>> {
         let map = PEER_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut m = map.lock().expect("peer locks");
         m.entry(peer.to_string()).or_insert_with(|| Arc::new(AsyncMutex::new(()))).clone()
+    }
+
+    fn conns() -> &'static Mutex<HashMap<String, Connection>> {
+        CONNS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Conexão QUENTE pra um par: devolve a existente se ainda viva, senão abre uma nova
+    /// (via discovery n0 + mDNS) e guarda no mapa. Nunca sobrescreve uma conexão viva
+    /// que já esteja em uso — a corrida (duas conexões abrindo juntas) é resolvida
+    /// mantendo a que chegou primeiro e fechando a duplicata.
+    async fn get_conn(peer: &str) -> Result<Connection, String> {
+        // Caminho rápido: já temos uma viva.
+        if let Ok(m) = conns().lock() {
+            if let Some(c) = m.get(peer) {
+                if c.close_reason().is_none() {
+                    return Ok(c.clone());
+                }
+            }
+        }
+        // Abre uma nova SEM segurar o lock durante o await.
+        let endpoint = ENDPOINT.get().ok_or("rede não iniciada".to_string())?;
+        let bytes = crate::identity::hex_decode_32(peer)?;
+        let node_id = NodeId::from_bytes(&bytes).map_err(|e| e.to_string())?;
+        let conn = endpoint.connect(node_id, ALPN).await.map_err(|e| e.to_string())?;
+        // Reconfere: alguém pode ter conectado enquanto abríamos.
+        let mut m = conns().lock().map_err(|_| "conns lock".to_string())?;
+        if let Some(c) = m.get(peer) {
+            if c.close_reason().is_none() {
+                let existing = c.clone();
+                drop(m);
+                conn.close(0u32.into(), b"dup");
+                return Ok(existing);
+            }
+        }
+        m.insert(peer.to_string(), conn.clone());
+        Ok(conn)
+    }
+
+    /// Descarta a conexão quente de um par (morta/instável) pra forçar reconexão.
+    fn drop_conn(peer: &str) {
+        if let Ok(mut m) = conns().lock() {
+            if let Some(c) = m.remove(peer) {
+                c.close(0u32.into(), b"reconnect");
+            }
+        }
+    }
+
+    /// Um ping: abre um stream, manda `{"t":"ping"}` e espera o ACK (o "pong"). Não toca
+    /// no ratchet, então não precisa do peer_lock nem vira mensagem no outro lado.
+    async fn ping_once(conn: &Connection) -> bool {
+        let Ok((mut s, mut r)) = conn.open_bi().await else { return false };
+        let Ok(frame) = serde_json::to_vec(&json!({ "t": "ping" })) else { return false };
+        if write_frame(&mut s, &frame).await.is_err() {
+            return false;
+        }
+        let mut ack = [0u8; 1];
+        let ok = r.read_exact(&mut ack).await.is_ok();
+        let _ = s.finish();
+        ok
+    }
+
+    /// Garante que existe UM watcher de presença rodando pra esse contato.
+    pub fn ensure_watch(app: &tauri::AppHandle, peer: &str) {
+        let set = WATCHING.get_or_init(|| Mutex::new(HashSet::new()));
+        {
+            let mut s = match set.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if !s.insert(peer.to_string()) {
+                return; // já tem watcher
+            }
+        }
+        let app = app.clone();
+        let peer = peer.to_string();
+        tauri::async_runtime::spawn(async move { watcher(app, peer).await });
+    }
+
+    /// Watcher de presença: mantém a conexão quente viva com ping/pong e avisa a UI
+    /// quando o par fica online/offline. Ao cair, tenta reconectar (backoff) — quando o
+    /// par volta, a presença vira online e a fila escoa pela conexão já quente.
+    async fn watcher(app: tauri::AppHandle, peer: String) {
+        let mut last: Option<bool> = None;
+        loop {
+            match tokio::time::timeout(PROBE_TIMEOUT, get_conn(&peer)).await {
+                Ok(Ok(conn)) => {
+                    emit_presence(&app, &peer, true, &mut last);
+                    // Batimento: enquanto os pings voltarem, o par está online.
+                    loop {
+                        tokio::time::sleep(HEARTBEAT).await;
+                        let ok = tokio::time::timeout(PROBE_TIMEOUT, ping_once(&conn))
+                            .await
+                            .unwrap_or(false);
+                        if !ok {
+                            break;
+                        }
+                    }
+                    drop_conn(&peer);
+                }
+                _ => {}
+            }
+            emit_presence(&app, &peer, false, &mut last);
+            tokio::time::sleep(RECONNECT).await;
+        }
+    }
+
+    fn emit_presence(app: &tauri::AppHandle, peer: &str, online: bool, last: &mut Option<bool>) {
+        if *last == Some(online) {
+            return; // só emite na mudança
+        }
+        *last = Some(online);
+        let _ = app.emit(EVENT_PRESENCE, &json!({ "peer": peer, "online": online }));
+    }
+
+    /// Começa a observar a presença do par (se ainda não) e devolve o status agora.
+    /// Idempotente — reusa a conexão quente/o watcher.
+    pub async fn watch(app: &tauri::AppHandle, peer: &str) -> bool {
+        ensure_watch(app, peer);
+        matches!(tokio::time::timeout(PROBE_TIMEOUT, get_conn(peer)).await, Ok(Ok(_)))
     }
 
     // Cabeçalhos são pequenos; os frames de chunk carregam ~1 MiB comprimido+cifrado.
@@ -178,6 +315,10 @@ mod imp {
                 .secret_key(sk)
                 .alpns(vec![ALPN.to_vec()])
                 .discovery_n0()
+                // mDNS na LAN: pares na mesma rede se acham sem depender do relay/DNS
+                // do n0 (internet). As duas descobertas rodam juntas — a que resolver
+                // primeiro conecta.
+                .discovery_local_network()
                 .bind()
                 .await
         }) {
@@ -363,12 +504,17 @@ mod imp {
         inner_json: &str,
         extra: Value,
     ) -> Result<(Connection, SendStream, RecvStream), String> {
-        let endpoint = ENDPOINT.get().ok_or("rede não iniciada".to_string())?;
         let db = app.state::<Db>();
-        let bytes = crate::identity::hex_decode_32(peer)?;
-        let node_id = NodeId::from_bytes(&bytes).map_err(|e| e.to_string())?;
-        let conn = endpoint.connect(node_id, ALPN).await.map_err(|e| e.to_string())?;
-        let (mut send_s, mut recv_s) = conn.open_bi().await.map_err(|e| e.to_string())?;
+        // Conexão QUENTE reusada: cada mensagem é só um stream novo nela. Se o open_bi
+        // falhar, a conexão morreu — descarta pra reconectar no próximo envio/heartbeat.
+        let conn = get_conn(peer).await?;
+        let (mut send_s, mut recv_s) = match conn.open_bi().await {
+            Ok(x) => x,
+            Err(e) => {
+                drop_conn(peer);
+                return Err(e.to_string());
+            }
+        };
 
         let mut header = if let Some(sbytes) = crate::db::session_get(&db, peer)? {
             // Sessão existente → mensagem normal.
@@ -423,13 +569,21 @@ mod imp {
         let peer: NodeId = conn.remote_node_id().map_err(|e| e.to_string())?;
         let peer_hex = hex(peer.as_bytes());
         loop {
-            let (mut send_s, mut recv_s) = match conn.accept_bi().await {
+            let (send_s, recv_s) = match conn.accept_bi().await {
                 Ok(x) => x,
                 Err(_) => break,
             };
-            if let Err(e) = handle_stream(&app, &peer_hex, &mut send_s, &mut recv_s).await {
-                super::report(&app, format!("stream de entrada: {e}"), true);
-            }
+            // Cada stream em sua própria tarefa: assim um anexo grande (que segura o
+            // peer_lock durante toda a transferência) não bloqueia os pings de presença
+            // nem outros streams. O ratchet segue serializado pelo peer_lock dentro.
+            let app = app.clone();
+            let peer_hex = peer_hex.clone();
+            tauri::async_runtime::spawn(async move {
+                let (mut send_s, mut recv_s) = (send_s, recv_s);
+                if let Err(e) = handle_stream(&app, &peer_hex, &mut send_s, &mut recv_s).await {
+                    super::report(&app, format!("stream de entrada: {e}"), true);
+                }
+            });
         }
         Ok(())
     }
@@ -440,11 +594,18 @@ mod imp {
         send_s: &mut SendStream,
         recv_s: &mut RecvStream,
     ) -> Result<(), String> {
+        let first = read_frame(recv_s).await?;
+        let v: Value = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
+        // Ping (liveness do heartbeat): responde o ACK na hora, sem ratchet nem lock —
+        // assim a presença não trava atrás de uma transferência em curso.
+        if v["t"].as_str() == Some("ping") {
+            send_s.write_all(&[1u8]).await.map_err(|e| e.to_string())?;
+            send_s.finish().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         let db = app.state::<Db>();
         // Serializa com esse par: um ratchet de cada vez (evita dessincronizar).
         let _g = peer_lock(peer_hex).lock_owned().await;
-        let first = read_frame(recv_s).await?;
-        let v: Value = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
         match v["t"].as_str() {
             Some("req_prekey") => {
                 let bundle = {
@@ -632,4 +793,4 @@ mod imp {
 }
 
 #[cfg(feature = "p2p")]
-pub use imp::{is_up, send_file, send_keyword, send_profile, send_read, send_text, start};
+pub use imp::{is_up, send_file, send_keyword, send_profile, send_read, send_text, start, watch};

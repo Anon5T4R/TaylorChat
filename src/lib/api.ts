@@ -84,6 +84,12 @@ export interface NetStatus {
 }
 export const netStatus = () => invoke<NetStatus>("net_status");
 export const netLog = () => invoke<string[]>("net_log");
+/// Começa a observar a presença do par (conexão quente + heartbeat) e devolve o status
+/// agora. Depois disso, escute `onPresence` pra atualizações em tempo real.
+export const peerOnline = (peer: string) => invoke<boolean>("peer_online", { peer });
+/// Mudanças de presença em tempo real (o heartbeat ping/pong detecta online/offline).
+export const onPresence = (cb: (p: { peer: string; online: boolean }) => void): Promise<UnlistenFn> =>
+  listen<{ peer: string; online: boolean }>("presence", (e) => cb(e.payload));
 /// Avisos de rede em tempo real (falha ao enviar/receber, etc.).
 export const onNetError = (cb: (line: string) => void): Promise<UnlistenFn> =>
   listen<string>("net-error", (e) => cb(e.payload));

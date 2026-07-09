@@ -65,8 +65,9 @@ async fn send_message(
             msg.state = "delivered".into();
         }
         Err(e) => {
-            // fica na fila e reenvia depois; avisa a UI pra o usuário saber.
-            net::report(&app, format!("mensagem na fila (par offline?): {e}"), true);
+            // Não conseguimos entregar AGORA (par inalcançável ou rede instável) — não é
+            // prova de que o par está offline. Fica na fila e reenvia sozinho.
+            net::report(&app, format!("mensagem na fila — reenvio automático quando o contato ficar alcançável ({e})"), true);
         }
     }
     Ok(msg)
@@ -118,7 +119,7 @@ async fn attach_file(
             msg.state = "delivered".into();
         }
         Err(e) => {
-            net::report(&app, format!("anexo na fila (par offline?): {e}"), true);
+            net::report(&app, format!("anexo na fila — reenvio automático quando o contato ficar alcançável ({e})"), true);
         }
     }
     Ok(msg)
@@ -323,6 +324,15 @@ fn net_log() -> Vec<String> {
     net::log_lines()
 }
 
+/// Começa a observar a presença do par (conexão quente + heartbeat ping/pong) e devolve
+/// o status agora. Daí em diante a UI recebe o evento `presence` a cada mudança —
+/// online/offline em tempo real, sem chute.
+#[tauri::command]
+async fn peer_online(app: tauri::AppHandle, peer: String) -> Result<bool, String> {
+    let (node, _thread) = split_convo(&peer);
+    Ok(net::watch(&app, node).await)
+}
+
 /// Lista todos os stickers salvos (todos os pacotes).
 #[tauri::command(async)]
 fn stickers_list(app: tauri::AppHandle) -> Result<Vec<media::Sticker>, String> {
@@ -410,6 +420,7 @@ pub fn run() {
             resend_all,
             net_status,
             net_log,
+            peer_online,
             set_keyword,
             keyword_status,
             audit_conversation,

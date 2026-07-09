@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Contact, ConvoSummary, MyIdentity, Profile, Thread } from "../lib/types";
 import { shortId, shortTime, splitConvo } from "../lib/ui";
 import { t } from "../lib/i18n";
@@ -28,9 +29,13 @@ export function Sidebar({
   onOpenPairing,
   onOpenSettings,
 }: Props) {
+  const [tab, setTab] = useState<"chats" | "contacts">("chats");
   const byNode = new Map(contacts.map((c) => [c.nodeId, c]));
   const rows = [...threads].sort(
     (a, b) => (summaries[b.convo]?.ts ?? 0) - (summaries[a.convo]?.ts ?? 0),
+  );
+  const contactRows = [...contacts].sort((a, b) =>
+    (a.nickname || a.profileName || a.nodeId).localeCompare(b.nickname || b.profileName || b.nodeId),
   );
 
   return (
@@ -64,6 +69,55 @@ export function Sidebar({
         ＋ {t("sidebar.pair")}
       </button>
 
+      <div className="sidebar-tabs">
+        <button
+          className={`sidebar-tab ${tab === "chats" ? "is-active" : ""}`}
+          onClick={() => setTab("chats")}
+        >
+          {t("sidebar.tabChats")}
+        </button>
+        <button
+          className={`sidebar-tab ${tab === "contacts" ? "is-active" : ""}`}
+          onClick={() => setTab("contacts")}
+        >
+          {t("sidebar.tabContacts")} {contacts.length > 0 && <span className="tab-count">{contacts.length}</span>}
+        </button>
+      </div>
+
+      {tab === "contacts" && (
+        <div className="contacts">
+          {contactRows.length === 0 && (
+            <div className="empty">
+              <p>{t("sidebar.contactsEmpty")}</p>
+              <button className="btn" onClick={onOpenPairing}>
+                {t("sidebar.pair")}
+              </button>
+            </div>
+          )}
+          {contactRows.map((c) => {
+            const name = c.nickname || c.profileName || shortId(c.nodeId);
+            return (
+              <button
+                key={c.nodeId}
+                className={`contact ${selected && splitConvo(selected).node === c.nodeId ? "is-active" : ""}`}
+                onClick={() => onSelect(c.nodeId)}
+              >
+                <Avatar nodeId={c.nodeId} name={name} avatar={c.avatar} />
+                <span className="contact-body">
+                  <span className="contact-top">
+                    <span className="contact-name">{name}</span>
+                  </span>
+                  <span className="contact-preview">
+                    <code>{shortId(c.nodeId)}</code>
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === "chats" && (
       <div className="contacts">
         {rows.length === 0 && (
           <div className="empty">
@@ -101,6 +155,7 @@ export function Sidebar({
           );
         })}
       </div>
+      )}
     </aside>
   );
 }

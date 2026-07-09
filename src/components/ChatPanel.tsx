@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openAttachment, type KeywordStatus } from "../lib/api";
+import { onPresence, openAttachment, peerOnline, type KeywordStatus } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
 import { dayLabel, shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
@@ -125,7 +125,28 @@ export function ChatPanel({
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [online, setOnline] = useState<boolean | null>(null); // null = verificando
   const searchRef = useRef<HTMLInputElement>(null);
+  const node = contact?.nodeId ?? null;
+
+  // Presença em tempo real: ao abrir a conversa, `peerOnline` liga a conexão quente +
+  // heartbeat e devolve o status inicial; daí o evento `presence` atualiza a bolinha na
+  // hora que o par entra/sai (o ping/pong detecta). null = ainda verificando.
+  useEffect(() => {
+    if (!node) return;
+    let alive = true;
+    setOnline(null);
+    peerOnline(node)
+      .then((v) => alive && setOnline(v))
+      .catch(() => {});
+    const unlisten = onPresence((p) => {
+      if (alive && p.peer === node) setOnline(p.online);
+    });
+    return () => {
+      alive = false;
+      unlisten.then((u) => u());
+    };
+  }, [node]);
 
   useEffect(() => {
     if (!searchOpen) endRef.current?.scrollIntoView({ block: "end" });
@@ -200,7 +221,13 @@ export function ChatPanel({
             {contact.nickname || contact.profileName || shortId(contact.nodeId)}
             {threadName && <span className="thread-tag">· {threadName}</span>}
           </strong>
-          <code>{shortId(contact.nodeId)}</code>
+          <span className="chat-presence">
+            <span
+              className={`presence-dot ${online === true ? "is-online" : online === false ? "is-offline" : "is-unknown"}`}
+            />
+            {online === true ? t("chat.online") : online === false ? t("chat.offline") : t("chat.checking")}
+            <code className="presence-id">{shortId(contact.nodeId)}</code>
+          </span>
         </div>
         <div className="chat-head-actions">
           <button
