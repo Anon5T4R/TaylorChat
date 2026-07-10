@@ -19,6 +19,8 @@ export interface Message {
   body: string; // text: o texto; file: JSON FileMeta
   ts: number;
   state: string; // out: queued|sent|delivered|read ; in: received
+  replyTo?: number | null; // ts da mensagem citada (responder)
+  deleted?: boolean; // apagada para todos
 }
 
 export interface FileMeta {

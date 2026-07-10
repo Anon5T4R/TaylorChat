@@ -1,11 +1,39 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { onPresence, openAttachment, peerOnline, type KeywordStatus } from "../lib/api";
+import { onPresence, openAttachment, openLink, peerOnline, type KeywordStatus } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
 import { dayLabel, shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { StickerPicker } from "./StickerPicker";
 import { Avatar } from "./Avatar";
+
+// Emojis comuns pro seletor do composer (sem dependência externa).
+const EMOJIS =
+  "😀 😁 😂 🤣 😊 😍 😘 😎 🤩 🥳 😉 🙂 🙃 😇 🤔 🤨 😐 😴 😢 😭 😤 😠 😱 😳 🥺 🤯 🤗 👍 👎 👌 🙏 👏 💪 🔥 ✨ 🎉 ❤️ 🧡 💛 💚 💙 💜 🖤 💯 ✅ ❌ ⭐ 👀 🎂 🍺 ☕".split(
+    " ",
+  );
+
+// URL → link clicável, sem HTML cru (evita XSS). Divide o texto e transforma só as URLs.
+function renderText(text: string) {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g);
+  return parts.map((p, i) =>
+    /^https?:\/\/\S+$/.test(p) ? (
+      <a
+        key={i}
+        className="msg-link"
+        href={p}
+        onClick={(e) => {
+          e.preventDefault();
+          openLink(p);
+        }}
+      >
+        {p}
+      </a>
+    ) : (
+      <span key={i}>{p}</span>
+    ),
+  );
+}
 
 interface Props {
   contact: Contact | null;
@@ -13,8 +41,9 @@ interface Props {
   messages: Message[];
   draft: string;
   kw: KeywordStatus | null;
+  peerTyping?: boolean;
   onDraftChange: (v: string) => void;
-  onSend: (body: string) => void;
+  onSend: (body: string, replyTo?: number | null) => void;
   onAttach: () => void;
   onToggleAi: () => void;
   aiOpen: boolean;
@@ -24,6 +53,8 @@ interface Props {
   onClear: () => void;
   onNewChat: () => void;
   onSendSticker: (path: string) => void;
+  onDeleteMine: (id: number) => void;
+  onDeleteEveryone: (ts: number) => void;
 }
 
 function formatSize(bytes: number): string {
@@ -109,6 +140,7 @@ export function ChatPanel({
   messages,
   draft,
   kw,
+  peerTyping,
   onDraftChange,
   onSend,
   onAttach,
@@ -120,14 +152,45 @@ export function ChatPanel({
   onClear,
   onNewChat,
   onSendSticker,
+  onDeleteMine,
+  onDeleteEveryone,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null); // null = verificando
+  const [menuFor, setMenuFor] = useState<number | null>(null); // id da msg com menu aberto
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
   const node = contact?.nodeId ?? null;
+
+  // Fecha o menu da bolha ao clicar fora (o clique no ⋯/menu usa stopPropagation).
+  useEffect(() => {
+    if (menuFor === null) return;
+    const close = () => setMenuFor(null);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [menuFor]);
+
+  // Insere um emoji na posição do cursor do composer.
+  const insertEmoji = (emo: string) => {
+    const ta = taRef.current;
+    if (!ta) {
+      onDraftChange(draft + emo);
+      return;
+    }
+    const start = ta.selectionStart ?? draft.length;
+    const end = ta.selectionEnd ?? draft.length;
+    onDraftChange(draft.slice(0, start) + emo + draft.slice(end));
+    requestAnimationFrame(() => {
+      ta.focus();
+      const pos = start + emo.length;
+      ta.setSelectionRange(pos, pos);
+    });
+  };
 
   // Presença em tempo real: ao abrir a conversa, `peerOnline` liga a conexão quente +
   // heartbeat e devolve o status inicial; daí o evento `presence` atualiza a bolinha na
@@ -187,8 +250,9 @@ export function ChatPanel({
   const submit = () => {
     const body = draft.trim();
     if (!body) return;
-    onSend(body);
+    onSend(body, replyingTo?.ts ?? null);
     onDraftChange("");
+    setReplyingTo(null);
   };
 
   const rows = Math.min(6, Math.max(1, draft.split("\n").length));
@@ -222,10 +286,16 @@ export function ChatPanel({
             {threadName && <span className="thread-tag">· {threadName}</span>}
           </strong>
           <span className="chat-presence">
-            <span
-              className={`presence-dot ${online === true ? "is-online" : online === false ? "is-offline" : "is-unknown"}`}
-            />
-            {online === true ? t("chat.online") : online === false ? t("chat.offline") : t("chat.checking")}
+            {peerTyping ? (
+              <span className="typing-label">{t("chat.typing")}</span>
+            ) : (
+              <>
+                <span
+                  className={`presence-dot ${online === true ? "is-online" : online === false ? "is-offline" : "is-unknown"}`}
+                />
+                {online === true ? t("chat.online") : online === false ? t("chat.offline") : t("chat.checking")}
+              </>
+            )}
             <code className="presence-id">{shortId(contact.nodeId)}</code>
           </span>
         </div>
@@ -313,11 +383,79 @@ export function ChatPanel({
                   <span>{day}</span>
                 </div>
               )}
-              <div className={`bubble ${m.direction === "out" ? "out" : "in"}`}>
-                {m.kind === "file" ? (
+              <div className={`bubble ${m.direction === "out" ? "out" : "in"} ${m.deleted ? "is-deleted" : ""}`}>
+                {!m.deleted && (
+                  <button
+                    className="bubble-menu-btn"
+                    title="⋯"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuFor((cur) => (cur === m.id ? null : m.id));
+                    }}
+                  >
+                    ⋯
+                  </button>
+                )}
+                {menuFor === m.id && (
+                  <div className="bubble-menu" onClick={(e) => e.stopPropagation()}>
+                    {m.kind !== "file" && (
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(m.body).catch(() => {});
+                          setMenuFor(null);
+                        }}
+                      >
+                        {t("msg.copy")}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setReplyingTo(m);
+                        setMenuFor(null);
+                        taRef.current?.focus();
+                      }}
+                    >
+                      {t("msg.reply")}
+                    </button>
+                    <button
+                      onClick={() => {
+                        onDeleteMine(m.id);
+                        setMenuFor(null);
+                      }}
+                    >
+                      {t("msg.deleteMine")}
+                    </button>
+                    {m.direction === "out" && (
+                      <button
+                        className="danger"
+                        onClick={() => {
+                          if (window.confirm(t("msg.deleteAllConfirm"))) onDeleteEveryone(m.ts);
+                          setMenuFor(null);
+                        }}
+                      >
+                        {t("msg.deleteAll")}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {m.replyTo != null &&
+                  (() => {
+                    const q = messages.find((x) => x.ts === m.replyTo);
+                    const txt = !q
+                      ? t("msg.quoteGone")
+                      : q.deleted
+                        ? t("msg.deleted")
+                        : q.kind === "file"
+                          ? "📎"
+                          : q.body.slice(0, 90);
+                    return <div className="bubble-quote">{txt}</div>;
+                  })()}
+                {m.deleted ? (
+                  <span className="bubble-body deleted">🚫 {t("msg.deleted")}</span>
+                ) : m.kind === "file" ? (
                   <FileBubble body={m.body} />
                 ) : (
-                  <span className="bubble-body">{m.body}</span>
+                  <span className="bubble-body">{renderText(m.body)}</span>
                 )}
                 <span className="bubble-meta">
                   {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{" "}
@@ -351,11 +489,45 @@ export function ChatPanel({
         />
       )}
 
+      {emojiOpen && (
+        <div className="emoji-picker">
+          {EMOJIS.map((e) => (
+            <button key={e} className="emoji-cell" onClick={() => insertEmoji(e)}>
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {replyingTo && (
+        <div className="reply-compose">
+          <span className="reply-compose-txt">
+            ↩ {replyingTo.kind === "file" ? "📎" : replyingTo.body.slice(0, 80)}
+          </span>
+          <button className="btn-icon" onClick={() => setReplyingTo(null)}>
+            ✕
+          </button>
+        </div>
+      )}
+
       <footer className="composer">
+        <button
+          className={`btn-attach ${emojiOpen ? "is-active" : ""}`}
+          title={t("chat.emojiTip")}
+          onClick={() => {
+            setEmojiOpen((v) => !v);
+            setStickerOpen(false);
+          }}
+        >
+          🙂
+        </button>
         <button
           className={`btn-attach ${stickerOpen ? "is-active" : ""}`}
           title={t("chat.stickerTip")}
-          onClick={() => setStickerOpen((v) => !v)}
+          onClick={() => {
+            setStickerOpen((v) => !v);
+            setEmojiOpen(false);
+          }}
         >
           😀
         </button>
@@ -363,6 +535,7 @@ export function ChatPanel({
           📎
         </button>
         <textarea
+          ref={taRef}
           value={draft}
           placeholder={t("chat.placeholder")}
           rows={rows}

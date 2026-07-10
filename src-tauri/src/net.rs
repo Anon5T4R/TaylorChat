@@ -66,6 +66,12 @@ pub const EVENT_PROFILE: &str = "profile";
 /// Presença de um par mudou (online/offline) — a UI atualiza a bolinha em tempo real.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_PRESENCE: &str = "presence";
+/// O par começou/parou de digitar — a UI mostra "digitando…" no cabeçalho.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_TYPING: &str = "typing";
+/// Uma mensagem foi apagada para todos (pelo par) — a UI marca como apagada.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_MSG_DELETED: &str = "msg-deleted";
 #[cfg(feature = "p2p")]
 const ALPN: &[u8] = b"taylorchat/msg/0";
 
@@ -81,8 +87,18 @@ pub async fn send_text(
     _thread: &str,
     _body: &str,
     _ts: i64,
+    _reply_to: Option<i64>,
 ) -> Result<(), String> {
     Err("mensageria ao vivo requer build com --features p2p (Fase 3)".into())
+}
+#[cfg(not(feature = "p2p"))]
+pub async fn send_delete(
+    _app: &tauri::AppHandle,
+    _peer: &str,
+    _thread: &str,
+    _target_ts: i64,
+) -> Result<(), String> {
+    Ok(())
 }
 #[cfg(not(feature = "p2p"))]
 pub async fn send_keyword(_app: &tauri::AppHandle, _peer: &str, _hash: &str) -> Result<(), String> {
@@ -105,6 +121,8 @@ pub async fn watch(_app: &tauri::AppHandle, _peer: &str) -> bool {
     false
 }
 #[cfg(not(feature = "p2p"))]
+pub async fn send_typing(_peer: &str, _thread: &str, _on: bool) {}
+#[cfg(not(feature = "p2p"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_file(
     _app: &tauri::AppHandle,
@@ -124,7 +142,10 @@ pub async fn send_file(
 // ─────────────────────────────── build com iroh ───────────────────────────────
 #[cfg(feature = "p2p")]
 mod imp {
-    use super::{ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_PRESENCE, EVENT_PROFILE, EVENT_RECEIPTS};
+    use super::{
+        ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_MSG_DELETED, EVENT_PRESENCE, EVENT_PROFILE,
+        EVENT_RECEIPTS, EVENT_TYPING,
+    };
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
     use base64::Engine;
@@ -196,6 +217,35 @@ mod imp {
         }
         m.insert(peer.to_string(), conn.clone());
         Ok(conn)
+    }
+
+    /// Conexão quente viva de um par, se existe — sem discar. Pro "digitando…", que não
+    /// vale abrir conexão só pra avisar.
+    fn live_conn(peer: &str) -> Option<Connection> {
+        let m = conns().lock().ok()?;
+        let c = m.get(peer)?;
+        if c.close_reason().is_none() {
+            Some(c.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Aviso de "digitando…": frame de controle leve (como o ping) pela conexão quente,
+    /// sem ratchet e sem virar mensagem. Best-effort — só se já há conexão viva.
+    pub async fn send_typing(peer: &str, thread: &str, on: bool) {
+        let Some(conn) = live_conn(peer) else { return };
+        let Ok((mut s, mut r)) = conn.open_bi().await else { return };
+        let Ok(frame) = serde_json::to_vec(&json!({ "t": "typing", "on": on, "thread": thread }))
+        else {
+            return;
+        };
+        if write_frame(&mut s, &frame).await.is_err() {
+            return;
+        }
+        let mut ack = [0u8; 1];
+        let _ = r.read_exact(&mut ack).await;
+        let _ = s.finish();
     }
 
     /// Descarta a conexão quente de um par (morta/instável) pra forçar reconexão.
@@ -390,9 +440,33 @@ mod imp {
         thread: &str,
         body: &str,
         ts: i64,
+        reply_to: Option<i64>,
     ) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
-        let inner = json!({ "k": "text", "body": body, "ts": ts, "thread": thread }).to_string();
+        let mut obj = json!({ "k": "text", "body": body, "ts": ts, "thread": thread });
+        if let Some(rt) = reply_to {
+            obj["replyTo"] = json!(rt);
+        }
+        let inner = obj.to_string();
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
+    }
+
+    /// Avisa o par que apaguei uma mensagem PARA TODOS (`{k:"delete"}` pelo canal E2E).
+    /// Só se já há sessão — sem conversa prévia não há o que apagar do outro lado.
+    pub async fn send_delete(
+        app: &tauri::AppHandle,
+        peer: &str,
+        thread: &str,
+        target_ts: i64,
+    ) -> Result<(), String> {
+        let db = app.state::<Db>();
+        if crate::db::session_get(&db, peer)?.is_none() {
+            return Ok(());
+        }
+        let _g = peer_lock(peer).lock_owned().await;
+        let inner =
+            json!({ "k": "delete", "targetTs": target_ts, "thread": thread }).to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
         ack(&mut s, &mut r).await
     }
@@ -603,6 +677,15 @@ mod imp {
             send_s.finish().map_err(|e| e.to_string())?;
             return Ok(());
         }
+        // "Digitando…": efêmero, só emite o evento pra UI (não persiste, sem ratchet).
+        if v["t"].as_str() == Some("typing") {
+            let on = v["on"].as_bool().unwrap_or(false);
+            let convo = convo_key(peer_hex, v["thread"].as_str().unwrap_or(""));
+            let _ = app.emit(EVENT_TYPING, &json!({ "peer": convo, "on": on }));
+            send_s.write_all(&[1u8]).await.map_err(|e| e.to_string())?;
+            send_s.finish().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         let db = app.state::<Db>();
         // Serializa com esse par: um ratchet de cada vez (evita dessincronizar).
         let _g = peer_lock(peer_hex).lock_owned().await;
@@ -680,7 +763,8 @@ mod imp {
         match iv["k"].as_str() {
             Some("text") => {
                 let body = iv["body"].as_str().unwrap_or_default();
-                let msg = crate::db::record_incoming(db, &convo, body, ts)?;
+                let reply_to = iv["replyTo"].as_i64();
+                let msg = crate::db::record_incoming(db, &convo, body, ts, reply_to)?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
                 let preview: String = body.chars().take(120).collect();
                 crate::notify_incoming(app, peer_hex, &preview);
@@ -759,6 +843,12 @@ mod imp {
                 crate::db::mark_out_read(db, &convo)?;
                 let _ = app.emit(EVENT_RECEIPTS, &json!({ "peer": convo }));
             }
+            // Apagar para todos: o par apagou uma mensagem (identificada por ts).
+            Some("delete") => {
+                let target_ts = iv["targetTs"].as_i64().unwrap_or(0);
+                crate::db::mark_deleted(db, &convo, target_ts)?;
+                let _ = app.emit(EVENT_MSG_DELETED, &json!({ "peer": convo, "ts": target_ts }));
+            }
             // Palavra-chave do par: guarda o hash e avisa a UI (confere/diverge).
             Some("keyword") => {
                 let hash = iv["hash"].as_str().ok_or("keyword sem hash")?;
@@ -801,4 +891,7 @@ mod imp {
 }
 
 #[cfg(feature = "p2p")]
-pub use imp::{is_up, send_file, send_keyword, send_profile, send_read, send_text, start, watch};
+pub use imp::{
+    is_up, send_delete, send_file, send_keyword, send_profile, send_read, send_text, send_typing,
+    start, watch,
+};

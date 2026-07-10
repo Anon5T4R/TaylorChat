@@ -1,6 +1,6 @@
 [package]
 name = "taylorchat"
-version = "0.2.0"
+version = "0.3.0"
 description = "TaylorChat — mensageiro P2P offline (sem servidor) com IA local"
 authors = ["Joao / Taylor"]
 edition = "2021"

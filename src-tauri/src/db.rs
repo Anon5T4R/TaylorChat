@@ -35,7 +35,9 @@ pub struct Message {
     pub kind: String,      // "text" | "file"
     pub body: String,      // text: o texto; file: JSON {filename,mime,size,localPath?}
     pub ts: i64,
-    pub state: String, // out: queued|sent|delivered|read ; in: received
+    pub state: String,          // out: queued|sent|delivered|read ; in: received
+    pub reply_to: Option<i64>,  // ts da mensagem citada (responder)
+    pub deleted: bool,          // apagada para todos (soft-delete)
 }
 
 /// Consolida o WAL no arquivo principal (TRUNCATE zera o diário). Sem isso os
@@ -165,6 +167,10 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
     .map_err(|e| format!("falha ao criar esquema: {e}"))?;
     // Migrações (ignora se a coluna já existe).
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'", []);
+    // Responder/citar: `reply_to` = ts da mensagem citada (mesmo ts nos 2 lados).
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_to INTEGER", []);
+    // Apagada (para todos): soft-delete — mantém a linha, esvazia o corpo, marca a flag.
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0", []);
     // Palavra-chave por contato: `kw` = a minha (cifrada), `peer_kw_hash` = o hash que o par mandou.
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN kw BLOB", []);
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN peer_kw_hash TEXT", []);
@@ -318,30 +324,36 @@ pub fn contact_remove(db: State<'_, Db>, node_id: String) -> Result<(), String> 
 #[tauri::command(async)]
 pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, String> {
     // Lê as linhas cruas (corpo cifrado) e decifra depois de soltar o lock da conexão.
-    let raw: Vec<(i64, String, String, String, Vec<u8>, i64, String)> = with_conn!(db, conn, {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, peer, direction, kind, body, ts, state FROM messages
-                 WHERE peer=?1 ORDER BY ts, id",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(rusqlite::params![peer], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
-            })
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-    });
+    let raw: Vec<(i64, String, String, String, Vec<u8>, i64, String, Option<i64>, i64)> =
+        with_conn!(db, conn, {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, peer, direction, kind, body, ts, state, reply_to, deleted
+                     FROM messages WHERE peer=?1 ORDER BY ts, id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![peer], |r| {
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
+                        r.get(7)?, r.get(8)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        });
     Ok(raw
         .into_iter()
-        .map(|(id, peer, direction, kind, body, ts, state)| Message {
+        .map(|(id, peer, direction, kind, body, ts, state, reply_to, deleted)| Message {
             id,
             peer,
             direction,
             kind,
-            body: dec_text(&db, &body),
+            body: if deleted != 0 { String::new() } else { dec_text(&db, &body) },
             ts,
             state,
+            reply_to,
+            deleted: deleted != 0,
         })
         .collect())
 }
@@ -537,6 +549,7 @@ pub fn thread_delete(db: State<'_, Db>, convo: String) -> Result<(), String> {
 /// Insere uma mensagem (texto ou arquivo), cifrando o corpo em repouso, e devolve a
 /// linha com o corpo em claro pra UI. `ts`: `None` gera agora (saída); `Some` usa o do
 /// remetente (entrada) — assim os dois lados guardam o MESMO ts (base da auditoria).
+#[allow(clippy::too_many_arguments)]
 fn insert_message(
     db: &Db,
     peer: &str,
@@ -545,6 +558,7 @@ fn insert_message(
     body: &str,
     state: &str,
     ts: Option<i64>,
+    reply_to: Option<i64>,
 ) -> Result<Message, String> {
     // (contato/thread são garantidos pela camada de rede, que tem o node_id puro)
     let ts = ts.unwrap_or_else(now_ms);
@@ -552,9 +566,9 @@ fn insert_message(
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
     let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
     conn.execute(
-        "INSERT INTO messages(peer, direction, kind, body, ts, state)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![peer, direction, kind, blob, ts, state],
+        "INSERT INTO messages(peer, direction, kind, body, ts, state, reply_to)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![peer, direction, kind, blob, ts, state, reply_to],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -566,13 +580,16 @@ fn insert_message(
         body: body.into(),
         ts,
         state: state.into(),
+        reply_to,
+        deleted: false,
     })
 }
 
 /// Persiste uma mensagem de texto de saída como `queued` e devolve a linha pra UI.
-/// O `ts` gerado aqui é transmitido ao par (ver lib::send_message).
-pub fn enqueue(db: &Db, peer: &str, body: &str) -> Result<Message, String> {
-    insert_message(db, peer, "out", "text", body, "queued", None)
+/// O `ts` gerado aqui é transmitido ao par (ver lib::send_message). `reply_to` = ts da
+/// mensagem citada (responder), se houver.
+pub fn enqueue(db: &Db, peer: &str, body: &str, reply_to: Option<i64>) -> Result<Message, String> {
+    insert_message(db, peer, "out", "text", body, "queued", None, reply_to)
 }
 
 /// Registra uma mensagem de arquivo (metadados JSON em `body`, `kind='file'`).
@@ -584,7 +601,7 @@ pub fn record_file(
     state: &str,
     ts: Option<i64>,
 ) -> Result<Message, String> {
-    insert_message(db, peer, direction, "file", meta_json, state, ts)
+    insert_message(db, peer, direction, "file", meta_json, state, ts, None)
 }
 
 /// Atualiza o estado de uma mensagem (queued→sent→delivered→read). Não-comando.
@@ -599,8 +616,14 @@ pub fn set_state(db: &Db, id: i64, state: &str) -> Result<(), String> {
 /// Registra uma mensagem de texto recebida já em claro (a rede decifrou pelo ratchet),
 /// usando o `ts` do remetente pra os dois lados baterem na auditoria.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
-pub fn record_incoming(db: &Db, peer: &str, plaintext: &str, ts: i64) -> Result<Message, String> {
-    insert_message(db, peer, "in", "text", plaintext, "received", Some(ts))
+pub fn record_incoming(
+    db: &Db,
+    peer: &str,
+    plaintext: &str,
+    ts: i64,
+    reply_to: Option<i64>,
+) -> Result<Message, String> {
+    insert_message(db, peer, "in", "text", plaintext, "received", Some(ts), reply_to)
 }
 
 #[tauri::command(async)]
@@ -617,6 +640,33 @@ pub fn clear_conversation(db: State<'_, Db>, peer: String) -> Result<(), String>
             .map_err(|e| e.to_string())?;
         Ok(())
     })
+}
+
+/// Apaga uma mensagem só pra MIM (remove a linha local). Não avisa o par.
+#[tauri::command(async)]
+pub fn message_delete(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute("DELETE FROM messages WHERE id=?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// Apaga uma mensagem PARA TODOS (soft-delete): mantém a linha (pra ordem/auditoria),
+/// esvazia o corpo cifrado e marca a flag. Identifica pela chave (convo, ts) — a mesma
+/// nos dois aparelhos. Usado tanto pelo meu comando quanto ao receber o aviso do par.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn mark_deleted(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
+    let empty = enc_text(db, "")?;
+    let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
+    let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    conn.execute(
+        "UPDATE messages SET deleted=1, body=?1 WHERE peer=?2 AND ts=?3",
+        rusqlite::params![empty, convo, ts],
+    )
+    .map_err(|e| e.to_string())?;
+    checkpoint_conn(conn);
+    Ok(())
 }
 
 // ── Palavra-chave por contato (verificação humana anti-MITM) ───────────────────
@@ -803,23 +853,23 @@ pub fn queued_convos(db: &Db) -> Result<Vec<String>, String> {
 
 /// Mensagens de saída ainda na fila (decifradas) pra um par — pro reenvio.
 pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
-    let raw: Vec<(i64, String, Vec<u8>, i64)> = with_conn!(db, conn, {
+    let raw: Vec<(i64, String, Vec<u8>, i64, Option<i64>)> = with_conn!(db, conn, {
         let mut stmt = conn
             .prepare(
-                "SELECT id, kind, body, ts FROM messages
-                 WHERE peer=?1 AND direction='out' AND state='queued' ORDER BY ts, id",
+                "SELECT id, kind, body, ts, reply_to FROM messages
+                 WHERE peer=?1 AND direction='out' AND state='queued' AND deleted=0 ORDER BY ts, id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params![peer], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     });
     Ok(raw
         .into_iter()
-        .map(|(id, kind, blob, ts)| Message {
+        .map(|(id, kind, blob, ts, reply_to)| Message {
             id,
             peer: peer.into(),
             direction: "out".into(),
@@ -827,6 +877,8 @@ pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
             body: dec_text(db, &blob),
             ts,
             state: "queued".into(),
+            reply_to,
+            deleted: false,
         })
         .collect())
 }

@@ -399,6 +399,10 @@ body {
 .presence-id {
   margin-left: 4px;
 }
+.typing-label {
+  color: var(--accent);
+  font-style: italic;
+}
 .thread-tag {
   margin-left: 6px;
   font-weight: 500;
@@ -846,6 +850,126 @@ body {
   display: flex;
   flex-direction: column;
   max-height: 300px;
+}
+.emoji-picker {
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 2px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.emoji-cell {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  padding: 6px 0;
+  border-radius: 8px;
+}
+.emoji-cell:hover {
+  background: var(--bg-3);
+}
+.msg-link {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  word-break: break-all;
+}
+/* Menu por mensagem (⋯ no hover da bolha) */
+.bubble {
+  position: relative;
+}
+.bubble-menu-btn {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.bubble:hover .bubble-menu-btn {
+  opacity: 0.7;
+}
+.bubble-menu-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.bubble-menu {
+  position: absolute;
+  top: 20px;
+  right: 4px;
+  z-index: 5;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  min-width: 150px;
+}
+.bubble-menu button {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bubble-menu button:hover {
+  background: var(--bg-3);
+}
+.bubble-menu button.danger {
+  color: var(--danger);
+}
+.bubble-quote {
+  border-left: 3px solid var(--accent);
+  padding: 3px 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bubble-body.deleted {
+  font-style: italic;
+  color: var(--text-dim);
+}
+.reply-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.reply-compose-txt {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sticker-tabs {
   display: flex;

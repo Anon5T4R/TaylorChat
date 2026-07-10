@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type {
   Contact,
   ConvoSummary,
@@ -25,8 +25,16 @@ export const contactRemove = (nodeId: string) => invoke<void>("contact_remove", 
 // ── Mensagens ────────────────────────────────────────────────────────────
 export const messagesList = (peer: string) => invoke<Message[]>("messages_list", { peer });
 export const clearConversation = (peer: string) => invoke<void>("clear_conversation", { peer });
-export const sendMessage = (peer: string, body: string) =>
-  invoke<Message>("send_message", { peer, body });
+export const sendMessage = (peer: string, body: string, replyTo?: number | null) =>
+  invoke<Message>("send_message", { peer, body, replyTo: replyTo ?? null });
+/// Apaga uma mensagem só pra mim (remove a linha local).
+export const messageDelete = (id: number) => invoke<void>("message_delete", { id });
+/// Apaga uma mensagem para todos (soft-delete + avisa o par por ts).
+export const deleteForEveryone = (peer: string, targetTs: number) =>
+  invoke<void>("delete_for_everyone", { peer, targetTs });
+/// O par apagou uma mensagem para todos (identificada por ts).
+export const onMsgDeleted = (cb: (peer: string, ts: number) => void): Promise<UnlistenFn> =>
+  listen<{ peer: string; ts: number }>("msg-deleted", (e) => cb(e.payload.peer, e.payload.ts));
 
 /// Escolhe um arquivo (diálogo nativo) e o envia como anexo. Devolve a mensagem
 /// criada, ou null se o usuário cancelou o diálogo.
@@ -115,6 +123,8 @@ export const onNetError = (cb: (line: string) => void): Promise<UnlistenFn> =>
 
 /// Abre um anexo salvo no app com o programa padrão do SO.
 export const openAttachment = (localPath: string) => openPath(localPath);
+/// Abre um link (URL) no navegador padrão.
+export const openLink = (url: string) => openUrl(url);
 
 /// Assina o evento de mensagem recebida (rede, Fase 3). Devolve o unlisten.
 export const onMessageIn = (cb: (m: Message) => void): Promise<UnlistenFn> =>
@@ -122,6 +132,13 @@ export const onMessageIn = (cb: (m: Message) => void): Promise<UnlistenFn> =>
 
 /// Avisa o par que li a conversa (recibo de leitura). Melhor esforço.
 export const markRead = (peer: string) => invoke<void>("mark_read", { peer });
+
+/// Avisa o par que estou (ou parei de) digitar nesta conversa. Best-effort.
+export const sendTyping = (peer: string, on: boolean) =>
+  invoke<void>("send_typing", { peer, on });
+/// "Digitando…" do par em tempo real.
+export const onTyping = (cb: (peer: string, on: boolean) => void): Promise<UnlistenFn> =>
+  listen<{ peer: string; on: boolean }>("typing", (e) => cb(e.payload.peer, e.payload.on));
 
 /// Assina o evento de recibo de leitura (minhas mensagens pro par viraram "lidas").
 export const onReceipts = (cb: (peer: string) => void): Promise<UnlistenFn> =>

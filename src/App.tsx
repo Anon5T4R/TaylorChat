@@ -34,6 +34,7 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const [kw, setKw] = useState<api.KeywordStatus | null>(null);
   const [myProfile, setMyProfile] = useState<Profile | null>(null);
+  const [typingConvo, setTypingConvo] = useState<string | null>(null);
 
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<Theme>(
@@ -47,6 +48,9 @@ export default function App() {
   selectedRef.current = selected;
   const rrRef = useRef(readReceipts);
   rrRef.current = readReceipts;
+  const lastTypingSent = useRef(0); // throttle do "estou digitando"
+  const typingStopTimer = useRef<number | undefined>(undefined); // agenda o "parei"
+  const incomingTypingTimer = useRef<number | undefined>(undefined); // limpa o "par digitando"
 
   useEffect(() => applyTheme(theme), [theme]);
 
@@ -71,6 +75,30 @@ export default function App() {
   const doMarkRead = (convo: string) => {
     if (rrRef.current) api.markRead(convo).catch(() => {});
   };
+  // "Estou digitando": manda no máx. a cada 2s enquanto digita e agenda o "parei" 3,5s
+  // depois da última tecla. Best-effort (só chega se há conexão quente).
+  const handleDraftChange = useCallback((v: string) => {
+    setDraft(v);
+    const c = selectedRef.current;
+    if (!c) return;
+    const now = Date.now();
+    if (now - lastTypingSent.current > 2000) {
+      lastTypingSent.current = now;
+      api.sendTyping(c, true).catch(() => {});
+    }
+    if (typingStopTimer.current) clearTimeout(typingStopTimer.current);
+    typingStopTimer.current = window.setTimeout(() => {
+      api.sendTyping(c, false).catch(() => {});
+      lastTypingSent.current = 0;
+    }, 3500);
+  }, []);
+  const stopTyping = useCallback(() => {
+    if (typingStopTimer.current) clearTimeout(typingStopTimer.current);
+    typingStopTimer.current = undefined;
+    lastTypingSent.current = 0;
+    const c = selectedRef.current;
+    if (c) api.sendTyping(c, false).catch(() => {});
+  }, []);
 
   const reloadContacts = useCallback(async () => {
     try {
@@ -170,6 +198,7 @@ export default function App() {
           reloadSummaries();
           if (m.peer === selectedRef.current) {
             setMessages((prev) => [...prev, m]);
+            setTypingConvo((cur) => (cur === m.peer ? null : cur));
             doMarkRead(m.peer);
           } else {
             setUnread((prev) => {
@@ -190,6 +219,28 @@ export default function App() {
         await api.onKeyword((node) => {
           const cur = selectedRef.current;
           if (cur && splitConvo(cur).node === node) loadKw(node);
+        }),
+      );
+      unlisteners.push(
+        await api.onTyping((peer, on) => {
+          if (incomingTypingTimer.current) clearTimeout(incomingTypingTimer.current);
+          if (on && peer === selectedRef.current) {
+            setTypingConvo(peer);
+            // segurança: some sozinho se o "parei" se perder
+            incomingTypingTimer.current = window.setTimeout(() => setTypingConvo(null), 6000);
+          } else {
+            setTypingConvo((cur) => (cur === peer ? null : cur));
+          }
+        }),
+      );
+      unlisteners.push(
+        await api.onMsgDeleted((peer, ts) => {
+          if (peer === selectedRef.current) {
+            setMessages((prev) =>
+              prev.map((m) => (m.ts === ts ? { ...m, deleted: true, body: "" } : m)),
+            );
+          }
+          reloadSummaries();
         }),
       );
       unlisteners.push(await api.onNetError((line) => setError(line)));
@@ -229,6 +280,9 @@ export default function App() {
   const handleSelect = useCallback(
     (convo: string) => {
       setSelected(convo);
+      setTypingConvo(null);
+      lastTypingSent.current = 0;
+      if (typingStopTimer.current) clearTimeout(typingStopTimer.current);
       loadMessages(convo);
       loadKw(splitConvo(convo).node);
       setUnread((prev) => {
@@ -244,11 +298,36 @@ export default function App() {
   );
 
   const handleSend = useCallback(
-    async (body: string) => {
+    async (body: string, replyTo?: number | null) => {
+      if (!selected) return;
+      stopTyping();
+      try {
+        const msg = await api.sendMessage(selected, body, replyTo);
+        setMessages((prev) => [...prev, msg]);
+        reloadSummaries();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selected, reloadSummaries, stopTyping],
+  );
+
+  const handleDeleteMine = useCallback(async (id: number) => {
+    try {
+      await api.messageDelete(id);
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+  const handleDeleteEveryone = useCallback(
+    async (ts: number) => {
       if (!selected) return;
       try {
-        const msg = await api.sendMessage(selected, body);
-        setMessages((prev) => [...prev, msg]);
+        await api.deleteForEveryone(selected, ts);
+        setMessages((prev) =>
+          prev.map((m) => (m.ts === ts ? { ...m, deleted: true, body: "" } : m)),
+        );
         reloadSummaries();
       } catch (e) {
         setError(String(e));
@@ -392,7 +471,8 @@ export default function App() {
         messages={messages}
         draft={draft}
         kw={kw}
-        onDraftChange={setDraft}
+        peerTyping={typingConvo !== null && typingConvo === selected}
+        onDraftChange={handleDraftChange}
         onSend={handleSend}
         onAttach={handleAttach}
         onToggleAi={() => setAiOpen((v) => !v)}
@@ -403,6 +483,8 @@ export default function App() {
         onClear={handleClear}
         onNewChat={handleNewChat}
         onSendSticker={handleSendSticker}
+        onDeleteMine={handleDeleteMine}
+        onDeleteEveryone={handleDeleteEveryone}
       />
       {showAi && (
         <AiPanel

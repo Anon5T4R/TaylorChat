@@ -68,14 +68,15 @@ async fn send_message(
     db: tauri::State<'_, Db>,
     peer: String,
     body: String,
+    reply_to: Option<i64>,
 ) -> Result<Message, String> {
     let body = body.trim().to_string();
     if body.is_empty() {
         return Err("mensagem vazia".into());
     }
     let (node, thread) = split_convo(&peer);
-    let mut msg = db::enqueue(&db, &peer, &body)?;
-    match net::send_text(&app, node, thread, &body, msg.ts).await {
+    let mut msg = db::enqueue(&db, &peer, &body, reply_to)?;
+    match net::send_text(&app, node, thread, &body, msg.ts, reply_to).await {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -150,6 +151,29 @@ async fn mark_read(app: tauri::AppHandle, peer: String) -> Result<(), String> {
     net::send_read(&app, node, thread).await
 }
 
+/// Avisa o par que estou (ou parei de) digitar. Best-effort; só vai se há conexão quente.
+#[tauri::command]
+async fn send_typing(peer: String, on: bool) -> Result<(), String> {
+    let (node, thread) = split_convo(&peer);
+    net::send_typing(node, thread, on).await;
+    Ok(())
+}
+
+/// Apaga uma mensagem PARA TODOS: marca localmente (soft-delete) e avisa o par.
+/// `target_ts` = ts da mensagem (a mesma chave nos dois aparelhos).
+#[tauri::command]
+async fn delete_for_everyone(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    peer: String,
+    target_ts: i64,
+) -> Result<(), String> {
+    db::mark_deleted(&db, &peer, target_ts)?;
+    let (node, thread) = split_convo(&peer);
+    let _ = net::send_delete(&app, node, thread, target_ts).await;
+    Ok(())
+}
+
 /// Tenta reenviar o que ficou na fila (`queued`) pra um par. Para no primeiro erro
 /// (par continua offline — evita N timeouts). Devolve quantas saíram.
 #[tauri::command]
@@ -212,7 +236,7 @@ async fn do_resend(app: &tauri::AppHandle, db: &Db, peer: &str) -> Result<u32, S
             .await
             .is_ok()
         } else {
-            net::send_text(&app, node, thread, &m.body, m.ts).await.is_ok()
+            net::send_text(&app, node, thread, &m.body, m.ts, m.reply_to).await.is_ok()
         };
         if !ok {
             break;
@@ -452,6 +476,9 @@ pub fn run() {
             send_message,
             attach_file,
             mark_read,
+            send_typing,
+            delete_for_everyone,
+            db::message_delete,
             resend_queued,
             resend_all,
             net_status,
