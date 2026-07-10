@@ -7,6 +7,7 @@ import { randomHex, splitConvo } from "./lib/ui";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { PairingModal } from "./components/PairingModal";
+import { ForwardModal } from "./components/ForwardModal";
 import { AiPanel } from "./components/AiPanel";
 import { SettingsModal } from "./components/SettingsModal";
 
@@ -35,6 +36,8 @@ export default function App() {
   const [kw, setKw] = useState<api.KeywordStatus | null>(null);
   const [myProfile, setMyProfile] = useState<Profile | null>(null);
   const [typingConvo, setTypingConvo] = useState<string | null>(null);
+  const [reactions, setReactions] = useState<api.Reaction[]>([]);
+  const [forwarding, setForwarding] = useState<Message | null>(null);
 
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<Theme>(
@@ -131,6 +134,9 @@ export default function App() {
   }, []);
   const loadKw = useCallback((node: string) => {
     api.keywordStatus(node).then(setKw).catch(() => setKw(null));
+  }, []);
+  const loadReactions = useCallback((convo: string) => {
+    api.reactionsList(convo).then(setReactions).catch(() => setReactions([]));
   }, []);
   const reloadProfile = useCallback(() => {
     api.getProfile().then(setMyProfile).catch(() => {});
@@ -234,6 +240,15 @@ export default function App() {
         }),
       );
       unlisteners.push(
+        await api.onReaction((peer, targetTs, emoji) => {
+          if (peer !== selectedRef.current) return;
+          setReactions((prev) => {
+            const rest = prev.filter((r) => !(r.targetTs === targetTs && !r.mine));
+            return emoji ? [...rest, { targetTs, mine: false, emoji }] : rest;
+          });
+        }),
+      );
+      unlisteners.push(
         await api.onMsgDeleted((peer, ts) => {
           if (peer === selectedRef.current) {
             setMessages((prev) =>
@@ -281,9 +296,11 @@ export default function App() {
     (convo: string) => {
       setSelected(convo);
       setTypingConvo(null);
+      setReactions([]);
       lastTypingSent.current = 0;
       if (typingStopTimer.current) clearTimeout(typingStopTimer.current);
       loadMessages(convo);
+      loadReactions(convo);
       loadKw(splitConvo(convo).node);
       setUnread((prev) => {
         if (!prev[convo]) return prev;
@@ -294,7 +311,7 @@ export default function App() {
       api.sendProfile(convo).catch(() => {});
       flushQueue(convo);
     },
-    [loadMessages, loadKw, flushQueue],
+    [loadMessages, loadKw, loadReactions, flushQueue],
   );
 
   const handleSend = useCallback(
@@ -310,6 +327,43 @@ export default function App() {
       }
     },
     [selected, reloadSummaries, stopTyping],
+  );
+
+  const handleReact = useCallback(
+    async (targetTs: number, emoji: string) => {
+      if (!selected) return;
+      const mineCur = reactions.find((r) => r.targetTs === targetTs && r.mine)?.emoji;
+      const next = mineCur === emoji ? "" : emoji; // clicar de novo remove
+      setReactions((prev) => {
+        const rest = prev.filter((r) => !(r.targetTs === targetTs && r.mine));
+        return next ? [...rest, { targetTs, mine: true, emoji: next }] : rest;
+      });
+      api.react(selected, targetTs, next).catch(() => {});
+    },
+    [selected, reactions],
+  );
+
+  const doForward = useCallback(
+    async (targetConvo: string) => {
+      const m = forwarding;
+      setForwarding(null);
+      if (!m) return;
+      try {
+        if (m.kind === "file") {
+          const meta = JSON.parse(m.body) as { localPath?: string; sticker?: boolean };
+          if (!meta.localPath) throw new Error(t("fwd.noLocal"));
+          if (meta.sticker) await api.sendSticker(targetConvo, meta.localPath);
+          else await api.attachPath(targetConvo, meta.localPath);
+        } else {
+          await api.sendMessage(targetConvo, m.body);
+        }
+        reloadSummaries();
+        handleSelect(targetConvo);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [forwarding, reloadSummaries, handleSelect],
   );
 
   const handleDeleteMine = useCallback(async (id: number) => {
@@ -472,6 +526,9 @@ export default function App() {
         draft={draft}
         kw={kw}
         peerTyping={typingConvo !== null && typingConvo === selected}
+        reactions={reactions}
+        onReact={handleReact}
+        onForward={(m) => setForwarding(m)}
         onDraftChange={handleDraftChange}
         onSend={handleSend}
         onAttach={handleAttach}
@@ -496,6 +553,16 @@ export default function App() {
       )}
       {pairingOpen && me && (
         <PairingModal me={me} onClose={() => setPairingOpen(false)} onAdd={handleAddContact} />
+      )}
+      {forwarding && (
+        <ForwardModal
+          threads={threads}
+          contacts={contacts}
+          summaries={summaries}
+          exclude={selected}
+          onPick={doForward}
+          onClose={() => setForwarding(null)}
+        />
       )}
       {settingsOpen && (
         <SettingsModal

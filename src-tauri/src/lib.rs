@@ -169,8 +169,27 @@ async fn delete_for_everyone(
     target_ts: i64,
 ) -> Result<(), String> {
     db::mark_deleted(&db, &peer, target_ts)?;
+    // Enfileira e tenta já; se o par estiver offline, o resend_all reenvia até o ACK.
+    db::pending_delete_add(&db, &peer, target_ts)?;
     let (node, thread) = split_convo(&peer);
-    let _ = net::send_delete(&app, node, thread, target_ts).await;
+    if net::send_delete(&app, node, thread, target_ts).await.is_ok() {
+        let _ = db::pending_delete_remove(&db, &peer, target_ts);
+    }
+    Ok(())
+}
+
+/// Reage a uma mensagem (emoji vazio = remove a minha). Guarda a minha e avisa o par.
+#[tauri::command]
+async fn react(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    peer: String,
+    target_ts: i64,
+    emoji: String,
+) -> Result<(), String> {
+    db::reaction_set(&db, &peer, target_ts, true, &emoji)?;
+    let (node, thread) = split_convo(&peer);
+    let _ = net::send_reaction(&app, node, thread, target_ts, &emoji).await;
     Ok(())
 }
 
@@ -193,6 +212,13 @@ async fn resend_all(app: tauri::AppHandle, db: tauri::State<'_, Db>) -> Result<u
     let mut total = 0u32;
     for convo in convos {
         total += do_resend(&app, &db, &convo).await.unwrap_or(0);
+    }
+    // Escoa os "apagar para todos" que ficaram pendentes (par estava offline).
+    for (convo, ts) in db::pending_deletes_all(&db).unwrap_or_default() {
+        let (node, thread) = split_convo(&convo);
+        if net::send_delete(&app, node, thread, ts).await.is_ok() {
+            let _ = db::pending_delete_remove(&db, &convo, ts);
+        }
     }
     Ok(total)
 }
@@ -478,7 +504,9 @@ pub fn run() {
             mark_read,
             send_typing,
             delete_for_everyone,
+            react,
             db::message_delete,
+            db::reactions_list,
             resend_queued,
             resend_all,
             net_status,

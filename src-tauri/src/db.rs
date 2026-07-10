@@ -192,6 +192,24 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
         "CREATE TABLE IF NOT EXISTS unread (convo TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
         [],
     );
+    // "Apagar para todos" pendentes: se o par estava offline na hora, o aviso fica aqui e
+    // o reenvio periódico (resend_all) tenta de novo até o ACK. Sem isso, apagava só do
+    // meu lado (correção A da revisão).
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS pending_deletes (convo TEXT, ts INTEGER, PRIMARY KEY(convo, ts))",
+        [],
+    );
+    // Reações por mensagem: `mine`=1 a minha, 0 a do par (1:1, no máx. uma de cada).
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS reactions (
+             convo TEXT NOT NULL,
+             target_ts INTEGER NOT NULL,
+             mine INTEGER NOT NULL,
+             emoji TEXT NOT NULL,
+             PRIMARY KEY(convo, target_ts, mine)
+         )",
+        [],
+    );
     // Backfill: contatos salvos antes de a coluna threads existir (ou por um contact_add
     // que não criava a conversa principal) precisam da sua thread principal, senão somem
     // da sidebar, que lista threads. Idempotente.
@@ -378,8 +396,13 @@ pub fn search_messages(db: State<'_, Db>, query: String, limit: i64) -> Result<V
     }
     let limit = limit.clamp(1, 200) as usize;
     let raw: Vec<(String, Vec<u8>, i64)> = with_conn!(db, conn, {
+        // Limita às mais recentes: sem isso, cada tecla decifraria o histórico INTEIRO.
+        // 4000 cobre a busca do dia a dia; índice de busca completo fica pra depois.
         let mut stmt = conn
-            .prepare("SELECT peer, body, ts FROM messages WHERE kind='text' ORDER BY ts DESC, id DESC")
+            .prepare(
+                "SELECT peer, body, ts FROM messages
+                 WHERE kind='text' AND deleted=0 ORDER BY ts DESC, id DESC LIMIT 4000",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -667,6 +690,92 @@ pub fn mark_deleted(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     checkpoint_conn(conn);
     Ok(())
+}
+
+// ── Fila de "apagar para todos" (reenvio se o par estava offline) ──────────────
+pub fn pending_delete_add(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute(
+            "INSERT OR IGNORE INTO pending_deletes(convo, ts) VALUES(?1, ?2)",
+            rusqlite::params![convo, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn pending_delete_remove(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute(
+            "DELETE FROM pending_deletes WHERE convo=?1 AND ts=?2",
+            rusqlite::params![convo, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn pending_deletes_all(db: &Db) -> Result<Vec<(String, i64)>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT convo, ts FROM pending_deletes")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
+// ── Reações por mensagem ───────────────────────────────────────────────────────
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub target_ts: i64,
+    pub mine: bool,
+    pub emoji: String,
+}
+
+/// Grava/atualiza uma reação (emoji vazio = remove). `mine` distingue a minha da do par.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn reaction_set(db: &Db, convo: &str, target_ts: i64, mine: bool, emoji: &str) -> Result<(), String> {
+    with_conn!(db, conn, {
+        if emoji.is_empty() {
+            conn.execute(
+                "DELETE FROM reactions WHERE convo=?1 AND target_ts=?2 AND mine=?3",
+                rusqlite::params![convo, target_ts, mine as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "INSERT INTO reactions(convo, target_ts, mine, emoji) VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(convo, target_ts, mine) DO UPDATE SET emoji=excluded.emoji",
+                rusqlite::params![convo, target_ts, mine as i64, emoji],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// Todas as reações de uma conversa (pra UI montar por mensagem).
+#[tauri::command(async)]
+pub fn reactions_list(db: State<'_, Db>, convo: String) -> Result<Vec<Reaction>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT target_ts, mine, emoji FROM reactions WHERE convo=?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![convo], |r| {
+                Ok(Reaction {
+                    target_ts: r.get(0)?,
+                    mine: r.get::<_, i64>(1)? != 0,
+                    emoji: r.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
 }
 
 // ── Palavra-chave por contato (verificação humana anti-MITM) ───────────────────

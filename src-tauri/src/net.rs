@@ -72,6 +72,9 @@ pub const EVENT_TYPING: &str = "typing";
 /// Uma mensagem foi apagada para todos (pelo par) — a UI marca como apagada.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
 pub const EVENT_MSG_DELETED: &str = "msg-deleted";
+/// O par reagiu (ou removeu a reação) a uma mensagem — a UI atualiza os chips.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub const EVENT_REACTION: &str = "reaction";
 #[cfg(feature = "p2p")]
 const ALPN: &[u8] = b"taylorchat/msg/0";
 
@@ -97,6 +100,16 @@ pub async fn send_delete(
     _peer: &str,
     _thread: &str,
     _target_ts: i64,
+) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(not(feature = "p2p"))]
+pub async fn send_reaction(
+    _app: &tauri::AppHandle,
+    _peer: &str,
+    _thread: &str,
+    _target_ts: i64,
+    _emoji: &str,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -144,7 +157,7 @@ pub async fn send_file(
 mod imp {
     use super::{
         ALPN, EVENT_KEYWORD, EVENT_MESSAGE_IN, EVENT_MSG_DELETED, EVENT_PRESENCE, EVENT_PROFILE,
-        EVENT_RECEIPTS, EVENT_TYPING,
+        EVENT_REACTION, EVENT_RECEIPTS, EVENT_TYPING,
     };
     use crate::db::Db;
     use crate::ratchet::{self, PreKeyBundle};
@@ -471,6 +484,25 @@ mod imp {
         ack(&mut s, &mut r).await
     }
 
+    /// Envia uma reação (emoji vazio = removi a minha) a uma mensagem (`{k:"reaction"}`).
+    pub async fn send_reaction(
+        app: &tauri::AppHandle,
+        peer: &str,
+        thread: &str,
+        target_ts: i64,
+        emoji: &str,
+    ) -> Result<(), String> {
+        let db = app.state::<Db>();
+        if crate::db::session_get(&db, peer)?.is_none() {
+            return Ok(());
+        }
+        let _g = peer_lock(peer).lock_owned().await;
+        let inner = json!({ "k": "reaction", "targetTs": target_ts, "emoji": emoji, "thread": thread })
+            .to_string();
+        let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
+        ack(&mut s, &mut r).await
+    }
+
     /// Manda meu perfil (nome + avatar) pra um contato, que cacheia. Só se já existe
     /// sessão (não vale abrir handshake só pra isso). Por CONTATO, sem `thread`.
     pub async fn send_profile(app: &tauri::AppHandle, peer: &str) -> Result<(), String> {
@@ -712,7 +744,12 @@ mod imp {
             Some("msg") => {
                 process_message(app, &db, peer_hex, &v, send_s, recv_s).await?;
             }
-            other => return Err(format!("frame desconhecido: {other:?}")),
+            // Tipo de frame desconhecido (provavelmente um cliente MAIS NOVO): ignora com
+            // graça e ainda ACK abaixo, pra o remetente não travar nem ver falha. É o que
+            // mantém a compatibilidade entre versões quando surgem novos controles.
+            other => {
+                super::report(app, format!("frame ignorado (tipo desconhecido: {other:?})"), false);
+            }
         }
         // ACK: confirma o processamento pro remetente.
         send_s.write_all(&[1u8]).await.map_err(|e| e.to_string())?;
@@ -849,6 +886,16 @@ mod imp {
                 crate::db::mark_deleted(db, &convo, target_ts)?;
                 let _ = app.emit(EVENT_MSG_DELETED, &json!({ "peer": convo, "ts": target_ts }));
             }
+            // Reação do par a uma mensagem minha (emoji vazio = removeu).
+            Some("reaction") => {
+                let target_ts = iv["targetTs"].as_i64().unwrap_or(0);
+                let emoji = iv["emoji"].as_str().unwrap_or("");
+                crate::db::reaction_set(db, &convo, target_ts, false, emoji)?;
+                let _ = app.emit(
+                    EVENT_REACTION,
+                    &json!({ "peer": convo, "targetTs": target_ts, "emoji": emoji }),
+                );
+            }
             // Palavra-chave do par: guarda o hash e avisa a UI (confere/diverge).
             Some("keyword") => {
                 let hash = iv["hash"].as_str().ok_or("keyword sem hash")?;
@@ -868,7 +915,11 @@ mod imp {
                 crate::db::set_contact_profile(db, peer_hex, name, avatar_path.as_deref())?;
                 let _ = app.emit(EVENT_PROFILE, &json!({ "peer": peer_hex }));
             }
-            other => return Err(format!("conteúdo desconhecido: {other:?}")),
+            // Conteúdo desconhecido (cliente mais novo): ignora. O ratchet já avançou na
+            // decifragem, então descartar o plaintext é seguro — só não vira nada na UI.
+            other => {
+                super::report(app, format!("conteúdo ignorado (tipo desconhecido: {other:?})"), false);
+            }
         }
         Ok(())
     }
@@ -892,6 +943,6 @@ mod imp {
 
 #[cfg(feature = "p2p")]
 pub use imp::{
-    is_up, send_delete, send_file, send_keyword, send_profile, send_read, send_text, send_typing,
-    start, watch,
+    is_up, send_delete, send_file, send_keyword, send_profile, send_reaction, send_read, send_text,
+    send_typing, start, watch,
 };

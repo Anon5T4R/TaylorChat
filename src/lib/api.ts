@@ -36,6 +36,23 @@ export const deleteForEveryone = (peer: string, targetTs: number) =>
 export const onMsgDeleted = (cb: (peer: string, ts: number) => void): Promise<UnlistenFn> =>
   listen<{ peer: string; ts: number }>("msg-deleted", (e) => cb(e.payload.peer, e.payload.ts));
 
+// ── Reações ────────────────────────────────────────────────────────────────
+export interface Reaction {
+  targetTs: number;
+  mine: boolean;
+  emoji: string;
+}
+export const reactionsList = (convo: string) => invoke<Reaction[]>("reactions_list", { convo });
+/// Reage a uma mensagem (emoji vazio remove a minha).
+export const react = (peer: string, targetTs: number, emoji: string) =>
+  invoke<void>("react", { peer, targetTs, emoji });
+export const onReaction = (
+  cb: (peer: string, targetTs: number, emoji: string) => void,
+): Promise<UnlistenFn> =>
+  listen<{ peer: string; targetTs: number; emoji: string }>("reaction", (e) =>
+    cb(e.payload.peer, e.payload.targetTs, e.payload.emoji),
+  );
+
 /// Escolhe um arquivo (diálogo nativo) e o envia como anexo. Devolve a mensagem
 /// criada, ou null se o usuário cancelou o diálogo.
 export const pickAndAttach = async (peer: string): Promise<Message | null> => {

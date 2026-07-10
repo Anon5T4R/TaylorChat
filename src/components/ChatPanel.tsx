@@ -1,11 +1,21 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { onPresence, openAttachment, openLink, peerOnline, type KeywordStatus } from "../lib/api";
+import {
+  onPresence,
+  openAttachment,
+  openLink,
+  peerOnline,
+  type KeywordStatus,
+  type Reaction,
+} from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
 import { dayLabel, shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { StickerPicker } from "./StickerPicker";
 import { Avatar } from "./Avatar";
+
+// Reações rápidas (como o WhatsApp).
+const REACT_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 // Emojis comuns pro seletor do composer (sem dependência externa).
 const EMOJIS =
@@ -42,6 +52,9 @@ interface Props {
   draft: string;
   kw: KeywordStatus | null;
   peerTyping?: boolean;
+  reactions?: Reaction[];
+  onReact: (targetTs: number, emoji: string) => void;
+  onForward: (m: Message) => void;
   onDraftChange: (v: string) => void;
   onSend: (body: string, replyTo?: number | null) => void;
   onAttach: () => void;
@@ -141,6 +154,9 @@ export function ChatPanel({
   draft,
   kw,
   peerTyping,
+  reactions,
+  onReact,
+  onForward,
   onDraftChange,
   onSend,
   onAttach,
@@ -398,6 +414,20 @@ export function ChatPanel({
                 )}
                 {menuFor === m.id && (
                   <div className="bubble-menu" onClick={(e) => e.stopPropagation()}>
+                    <div className="react-row">
+                      {REACT_EMOJIS.map((e) => (
+                        <button
+                          key={e}
+                          className="react-pick"
+                          onClick={() => {
+                            onReact(m.ts, e);
+                            setMenuFor(null);
+                          }}
+                        >
+                          {e}
+                        </button>
+                      ))}
+                    </div>
                     {m.kind !== "file" && (
                       <button
                         onClick={() => {
@@ -416,6 +446,14 @@ export function ChatPanel({
                       }}
                     >
                       {t("msg.reply")}
+                    </button>
+                    <button
+                      onClick={() => {
+                        onForward(m);
+                        setMenuFor(null);
+                      }}
+                    >
+                      {t("msg.forward")}
                     </button>
                     <button
                       onClick={() => {
@@ -472,6 +510,25 @@ export function ChatPanel({
                     {stateGlyph(m)}
                   </span>
                 </span>
+                {(() => {
+                  const mine = reactions?.find((r) => r.targetTs === m.ts && r.mine)?.emoji;
+                  const peer = reactions?.find((r) => r.targetTs === m.ts && !r.mine)?.emoji;
+                  if (!mine && !peer) return null;
+                  return (
+                    <span className="reactions">
+                      {peer && <span className="react-chip">{peer}</span>}
+                      {mine && (
+                        <span
+                          className="react-chip mine"
+                          title={t("msg.reactRemove")}
+                          onClick={() => onReact(m.ts, mine)}
+                        >
+                          {mine}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })()}
               </div>
             </Fragment>
           );
