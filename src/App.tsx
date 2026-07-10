@@ -478,6 +478,18 @@ export default function App() {
     [selected, reloadContacts],
   );
 
+  const handleToggleMute = useCallback(async () => {
+    if (!selected) return;
+    const node = splitConvo(selected).node;
+    const cur = contacts.find((c) => c.nodeId === node)?.muted ?? false;
+    try {
+      await api.setMuted(node, !cur);
+      await reloadContacts();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, contacts, reloadContacts]);
+
   const handleClear = useCallback(async () => {
     if (!selected) return;
     try {
@@ -559,6 +571,7 @@ export default function App() {
         onSendSticker={handleSendSticker}
         onDeleteMine={handleDeleteMine}
         onDeleteEveryone={handleDeleteEveryone}
+        onToggleMute={handleToggleMute}
       />
       {showAi && (
         <AiPanel

@@ -4,6 +4,7 @@ export interface Contact {
   addedTs: number;
   profileName?: string | null; // nome que ele definiu
   avatar?: string | null; // caminho do avatar dele (cache)
+  muted?: boolean; // silenciado (sem notificação)
 }
 
 export interface Profile {

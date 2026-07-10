@@ -134,6 +134,8 @@ pub async fn watch(_app: &tauri::AppHandle, _peer: &str) -> bool {
     false
 }
 #[cfg(not(feature = "p2p"))]
+pub fn unwatch(_peer: &str) {}
+#[cfg(not(feature = "p2p"))]
 pub async fn send_typing(_peer: &str, _thread: &str, _on: bool) {}
 #[cfg(not(feature = "p2p"))]
 #[allow(clippy::too_many_arguments)]
@@ -165,8 +167,9 @@ mod imp {
     use iroh::endpoint::{Connection, RecvStream, SendStream};
     use iroh::{Endpoint, NodeId, SecretKey};
     use serde_json::{json, Value};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
     use tauri::async_runtime::Mutex as AsyncMutex;
@@ -183,8 +186,12 @@ mod imp {
     // mensagem é um stream bi novo — o QUIC multiplexa). Evita refazer descoberta +
     // handshake a cada envio e mantém o canal vivo pro heartbeat de presença.
     static CONNS: OnceLock<Mutex<HashMap<String, Connection>>> = OnceLock::new();
-    // Contatos com um watcher de presença já rodando (evita duplicar tarefas).
-    static WATCHING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    // Contatos observados → token do watcher ativo. Evita duplicar tarefas E permite
+    // ENCERRAR um watcher (L4): se o token do mapa não bate mais com o da tarefa, ela sai
+    // (unwatch removeu, ou um novo watcher assumiu). Sem isso o watcher reconectava pra
+    // sempre a cada contato já aberto.
+    static WATCHING: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    static WATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
     const HEARTBEAT: Duration = Duration::from_secs(12); // intervalo do ping
     const PROBE_TIMEOUT: Duration = Duration::from_secs(6); // prazo de connect/ping
@@ -284,35 +291,62 @@ mod imp {
         ok
     }
 
+    fn watching() -> &'static Mutex<HashMap<String, u64>> {
+        WATCHING.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// O watcher `token` de `peer` ainda é o vigente? (senão deve encerrar).
+    fn watch_valid(peer: &str, token: u64) -> bool {
+        watching().lock().ok().map(|m| m.get(peer) == Some(&token)).unwrap_or(false)
+    }
+
     /// Garante que existe UM watcher de presença rodando pra esse contato.
     pub fn ensure_watch(app: &tauri::AppHandle, peer: &str) {
-        let set = WATCHING.get_or_init(|| Mutex::new(HashSet::new()));
-        {
-            let mut s = match set.lock() {
-                Ok(s) => s,
+        let token = {
+            let mut m = match watching().lock() {
+                Ok(m) => m,
                 Err(_) => return,
             };
-            if !s.insert(peer.to_string()) {
+            if m.contains_key(peer) {
                 return; // já tem watcher
             }
-        }
+            let tok = WATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+            m.insert(peer.to_string(), tok);
+            tok
+        };
         let app = app.clone();
         let peer = peer.to_string();
-        tauri::async_runtime::spawn(async move { watcher(app, peer).await });
+        tauri::async_runtime::spawn(async move { watcher(app, peer, token).await });
+    }
+
+    /// Para de observar a presença de um par (a conversa saiu de foco) — o watcher sai na
+    /// próxima checagem e a conexão quente é descartada.
+    pub fn unwatch(peer: &str) {
+        if let Ok(mut m) = watching().lock() {
+            m.remove(peer);
+        }
+        drop_conn(peer);
     }
 
     /// Watcher de presença: mantém a conexão quente viva com ping/pong e avisa a UI
     /// quando o par fica online/offline. Ao cair, tenta reconectar (backoff) — quando o
     /// par volta, a presença vira online e a fila escoa pela conexão já quente.
-    async fn watcher(app: tauri::AppHandle, peer: String) {
+    async fn watcher(app: tauri::AppHandle, peer: String, token: u64) {
         let mut last: Option<bool> = None;
         loop {
+            if !watch_valid(&peer, token) {
+                drop_conn(&peer);
+                return; // unwatch() ou um watcher mais novo assumiu
+            }
             match tokio::time::timeout(PROBE_TIMEOUT, get_conn(&peer)).await {
                 Ok(Ok(conn)) => {
                     emit_presence(&app, &peer, true, &mut last);
                     // Batimento: enquanto os pings voltarem, o par está online.
                     loop {
                         tokio::time::sleep(HEARTBEAT).await;
+                        if !watch_valid(&peer, token) {
+                            break;
+                        }
                         let ok = tokio::time::timeout(PROBE_TIMEOUT, ping_once(&conn))
                             .await
                             .unwrap_or(false);
@@ -325,6 +359,9 @@ mod imp {
                 _ => {}
             }
             emit_presence(&app, &peer, false, &mut last);
+            if !watch_valid(&peer, token) {
+                return;
+            }
             tokio::time::sleep(RECONNECT).await;
         }
     }
@@ -944,5 +981,5 @@ mod imp {
 #[cfg(feature = "p2p")]
 pub use imp::{
     is_up, send_delete, send_file, send_keyword, send_profile, send_reaction, send_read, send_text,
-    send_typing, start, watch,
+    send_typing, start, unwatch, watch,
 };

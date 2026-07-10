@@ -5,6 +5,7 @@ import {
   openAttachment,
   openLink,
   peerOnline,
+  peerUnwatch,
   type KeywordStatus,
   type Reaction,
 } from "../lib/api";
@@ -70,6 +71,7 @@ interface Props {
   onSendSticker: (path: string) => void;
   onDeleteMine: (id: number) => void;
   onDeleteEveryone: (ts: number) => void;
+  onToggleMute: () => void;
 }
 
 function formatSize(bytes: number): string {
@@ -174,6 +176,7 @@ export function ChatPanel({
   onSendSticker,
   onDeleteMine,
   onDeleteEveryone,
+  onToggleMute,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
@@ -228,6 +231,7 @@ export function ChatPanel({
     return () => {
       alive = false;
       unlisten.then((u) => u());
+      peerUnwatch(node).catch(() => {}); // encerra o watcher ao fechar/trocar (L4)
     };
   }, [node]);
 
@@ -346,6 +350,13 @@ export function ChatPanel({
             onClick={onSetKeyword}
           >
             🔑
+          </button>
+          <button
+            className={`btn-hdr ${contact.muted ? "is-active" : ""}`}
+            title={contact.muted ? t("chat.unmuteTip") : t("chat.muteTip")}
+            onClick={onToggleMute}
+          >
+            {contact.muted ? "🔕" : "🔔"}
           </button>
           <button
             className="btn-hdr"

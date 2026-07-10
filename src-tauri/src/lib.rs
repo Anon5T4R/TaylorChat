@@ -30,6 +30,9 @@ pub fn notify_incoming(app: &tauri::AppHandle, node: &str, preview: &str) {
         return;
     }
     let state = app.state::<Db>();
+    if db::is_muted(&state, node) {
+        return; // contato silenciado — sem notificação (mas o não-lido segue contando)
+    }
     let title = db::contact_name(&state, node);
     let _ = app.notification().builder().title(title).body(preview).show();
 }
@@ -400,6 +403,14 @@ async fn peer_online(app: tauri::AppHandle, peer: String) -> Result<bool, String
     Ok(net::watch(&app, node).await)
 }
 
+/// Para de observar a presença de um par (a conversa foi fechada/trocada) — encerra o
+/// watcher e a conexão quente, em vez de reconectar pra sempre (L4).
+#[tauri::command(async)]
+fn peer_unwatch(peer: String) {
+    let (node, _thread) = split_convo(&peer);
+    net::unwatch(node);
+}
+
 /// Reflete o total de não-lidos na bandeja (tooltip) e no título da janela — o "badge"
 /// de desktop. O Windows mostra o título no hover da taskbar e no Alt+Tab. count=0 volta
 /// ao nome limpo.
@@ -512,6 +523,7 @@ pub fn run() {
             net_status,
             net_log,
             peer_online,
+            peer_unwatch,
             set_badge,
             db::unread_list,
             db::unread_set,
@@ -529,6 +541,7 @@ pub fn run() {
             db::contacts_list,
             db::contact_add,
             db::contact_remove,
+            db::set_muted,
             db::messages_list,
             db::message_set_state,
             db::clear_conversation,

@@ -21,6 +21,9 @@ export const contactsList = () => invoke<Contact[]>("contacts_list");
 export const contactAdd = (nodeId: string, nickname: string) =>
   invoke<void>("contact_add", { nodeId, nickname });
 export const contactRemove = (nodeId: string) => invoke<void>("contact_remove", { nodeId });
+/// Silencia/dessilencia um contato (só afeta a notificação de desktop).
+export const setMuted = (nodeId: string, muted: boolean) =>
+  invoke<void>("set_muted", { nodeId, muted });
 
 // ── Mensagens ────────────────────────────────────────────────────────────
 /// Página de mensagens: as `limit` mais recentes antes de `beforeId` (ou as últimas).
@@ -133,6 +136,8 @@ export const netLog = () => invoke<string[]>("net_log");
 /// Começa a observar a presença do par (conexão quente + heartbeat) e devolve o status
 /// agora. Depois disso, escute `onPresence` pra atualizações em tempo real.
 export const peerOnline = (peer: string) => invoke<boolean>("peer_online", { peer });
+/// Para de observar a presença do par (conversa fechada) — encerra o watcher (L4).
+export const peerUnwatch = (peer: string) => invoke<void>("peer_unwatch", { peer });
 /// Mudanças de presença em tempo real (o heartbeat ping/pong detecta online/offline).
 export const onPresence = (cb: (p: { peer: string; online: boolean }) => void): Promise<UnlistenFn> =>
   listen<{ peer: string; online: boolean }>("presence", (e) => cb(e.payload));
