@@ -244,7 +244,13 @@ export function Sidebar({
                   {s && <span className="contact-time">{shortTime(s.ts)}</span>}
                 </span>
                 <span className={`contact-preview ${n > 0 ? "is-unread" : ""}`}>
-                  {s ? (s.direction === "out" ? `${t("me")}: ${s.body}` : s.body) : shortId(node)}
+                  {s
+                    ? s.deleted
+                      ? `🚫 ${t("msg.deleted")}`
+                      : s.direction === "out"
+                        ? `${t("me")}: ${s.body}`
+                        : s.body
+                    : shortId(node)}
                 </span>
               </span>
               {n > 0 && <span className="badge">{n}</span>}

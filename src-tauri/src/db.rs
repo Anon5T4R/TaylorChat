@@ -339,19 +339,31 @@ pub fn contact_remove(db: State<'_, Db>, node_id: String) -> Result<(), String> 
     })
 }
 
+/// Mensagens de uma conversa, PAGINADAS. Devolve as `limit` mais recentes antes de
+/// `before_id` (ou as últimas, se `before_id` for None), já em ordem crescente. Sem isso,
+/// abrir uma conversa longa carregava E decifrava TUDO (L2). Ordena por `id` = ordem em
+/// que as coisas aconteceram NESTE aparelho — assim o relógio torto do par não embaralha
+/// a exibição (L1); o `ts` (hora mostrada + base da auditoria) continua o do remetente.
 #[tauri::command(async)]
-pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, String> {
+pub fn messages_list(
+    db: State<'_, Db>,
+    peer: String,
+    before_id: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<Message>, String> {
+    let limit = limit.unwrap_or(300).clamp(1, 100_000);
+    let before = before_id.unwrap_or(i64::MAX);
     // Lê as linhas cruas (corpo cifrado) e decifra depois de soltar o lock da conexão.
     let raw: Vec<(i64, String, String, String, Vec<u8>, i64, String, Option<i64>, i64)> =
         with_conn!(db, conn, {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, peer, direction, kind, body, ts, state, reply_to, deleted
-                     FROM messages WHERE peer=?1 ORDER BY ts, id",
+                     FROM messages WHERE peer=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(rusqlite::params![peer], |r| {
+                .query_map(rusqlite::params![peer, before, limit], |r| {
                     Ok((
                         r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
                         r.get(7)?, r.get(8)?,
@@ -360,7 +372,7 @@ pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, St
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         });
-    Ok(raw
+    let mut out: Vec<Message> = raw
         .into_iter()
         .map(|(id, peer, direction, kind, body, ts, state, reply_to, deleted)| Message {
             id,
@@ -373,7 +385,9 @@ pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, St
             reply_to,
             deleted: deleted != 0,
         })
-        .collect())
+        .collect();
+    out.reverse(); // veio em id DESC (mais novas primeiro) → volta pra ordem crescente
+    Ok(out)
 }
 
 // ── Busca global de mensagens (por texto, entre todas as conversas) ────────────
@@ -909,40 +923,48 @@ pub fn audit_digest(db: &Db, convo: &str, my_id: &str, peer_node: &str) -> Resul
 pub struct ConvoSummary {
     pub peer: String,
     pub kind: String,
-    pub body: String, // texto truncado; arquivo vira "📎 nome"
+    pub body: String, // texto truncado; arquivo vira "📎 nome"; vazio se apagada
     pub ts: i64,
     pub direction: String,
+    pub deleted: bool, // última msg foi apagada para todos → a UI mostra o marcador
 }
 
 /// Última mensagem de cada conversa (pra prévia + ordenação da sidebar).
 #[tauri::command(async)]
 pub fn conversations_summary(db: State<'_, Db>) -> Result<Vec<ConvoSummary>, String> {
-    let raw: Vec<(String, String, Vec<u8>, i64, String)> = with_conn!(db, conn, {
+    let raw: Vec<(String, String, Vec<u8>, i64, String, i64)> = with_conn!(db, conn, {
         let mut stmt = conn
             .prepare(
-                "SELECT m.peer, m.kind, m.body, m.ts, m.direction FROM messages m
+                "SELECT m.peer, m.kind, m.body, m.ts, m.direction, m.deleted FROM messages m
                  JOIN (SELECT peer, MAX(id) AS mid FROM messages GROUP BY peer) l ON m.id = l.mid",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     });
     Ok(raw
         .into_iter()
-        .map(|(peer, kind, blob, ts, direction)| {
-            let text = dec_text(&db, &blob);
-            let body = if kind == "file" {
-                let name = serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| v["filename"].as_str().map(String::from))
-                    .unwrap_or_else(|| "arquivo".into());
-                format!("📎 {name}")
+        .map(|(peer, kind, blob, ts, direction, deleted)| {
+            let del = deleted != 0;
+            let body = if del {
+                String::new()
             } else {
-                text.chars().take(90).collect()
+                let text = dec_text(&db, &blob);
+                if kind == "file" {
+                    let name = serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|v| v["filename"].as_str().map(String::from))
+                        .unwrap_or_else(|| "arquivo".into());
+                    format!("📎 {name}")
+                } else {
+                    text.chars().take(90).collect()
+                }
             };
-            ConvoSummary { peer, kind, body, ts, direction }
+            ConvoSummary { peer, kind, body, ts, direction, deleted: del }
         })
         .collect())
 }

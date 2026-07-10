@@ -39,9 +39,10 @@ export interface Thread {
 export interface ConvoSummary {
   peer: string;
   kind: "text" | "file";
-  body: string; // prévia (arquivo vira "📎 nome")
+  body: string; // prévia (arquivo vira "📎 nome"; vazio se apagada)
   ts: number;
   direction: "out" | "in";
+  deleted?: boolean; // última msg apagada para todos
 }
 
 export interface MyIdentity {

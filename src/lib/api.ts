@@ -23,7 +23,9 @@ export const contactAdd = (nodeId: string, nickname: string) =>
 export const contactRemove = (nodeId: string) => invoke<void>("contact_remove", { nodeId });
 
 // ── Mensagens ────────────────────────────────────────────────────────────
-export const messagesList = (peer: string) => invoke<Message[]>("messages_list", { peer });
+/// Página de mensagens: as `limit` mais recentes antes de `beforeId` (ou as últimas).
+export const messagesList = (peer: string, beforeId?: number | null, limit?: number) =>
+  invoke<Message[]>("messages_list", { peer, beforeId: beforeId ?? null, limit: limit ?? null });
 export const clearConversation = (peer: string) => invoke<void>("clear_conversation", { peer });
 export const sendMessage = (peer: string, body: string, replyTo?: number | null) =>
   invoke<Message>("send_message", { peer, body, replyTo: replyTo ?? null });

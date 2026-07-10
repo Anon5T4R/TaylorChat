@@ -55,6 +55,8 @@ interface Props {
   reactions?: Reaction[];
   onReact: (targetTs: number, emoji: string) => void;
   onForward: (m: Message) => void;
+  hasMore?: boolean;
+  onLoadOlder: () => void;
   onDraftChange: (v: string) => void;
   onSend: (body: string, replyTo?: number | null) => void;
   onAttach: () => void;
@@ -157,6 +159,8 @@ export function ChatPanel({
   reactions,
   onReact,
   onForward,
+  hasMore,
+  onLoadOlder,
   onDraftChange,
   onSend,
   onAttach,
@@ -227,9 +231,22 @@ export function ChatPanel({
     };
   }, [node]);
 
+  const prevFirstId = useRef<number | null>(null);
+  const prevNode = useRef<string | null>(null);
   useEffect(() => {
-    if (!searchOpen) endRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, searchOpen]);
+    const firstId = messages[0]?.id ?? null;
+    const nodeChanged = prevNode.current !== node;
+    // Prepend (carregar antigas): a 1ª msg passou a ser mais antiga → NÃO rola pro fim,
+    // senão o "carregar mais antigas" jogava o usuário lá pra baixo.
+    const prepended =
+      !nodeChanged &&
+      prevFirstId.current !== null &&
+      firstId !== null &&
+      firstId < prevFirstId.current;
+    prevFirstId.current = firstId;
+    prevNode.current = node;
+    if (!searchOpen && !prepended) endRef.current?.scrollIntoView({ block: "end" });
+  }, [messages, searchOpen, node]);
 
   // Ctrl+F abre/fecha a busca na conversa.
   useEffect(() => {
@@ -388,6 +405,11 @@ export function ChatPanel({
       )}
 
       <div className="messages">
+        {hasMore && !search && (
+          <button className="load-older" onClick={onLoadOlder}>
+            {t("chat.loadOlder")}
+          </button>
+        )}
         {visible.map((m) => {
           const day = dayLabel(m.ts);
           const sep = day !== lastDay;

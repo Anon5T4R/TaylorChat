@@ -38,6 +38,7 @@ export default function App() {
   const [typingConvo, setTypingConvo] = useState<string | null>(null);
   const [reactions, setReactions] = useState<api.Reaction[]>([]);
   const [forwarding, setForwarding] = useState<Message | null>(null);
+  const [hasMore, setHasMore] = useState(false); // há mensagens mais antigas pra carregar
 
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<Theme>(
@@ -51,6 +52,8 @@ export default function App() {
   selectedRef.current = selected;
   const rrRef = useRef(readReceipts);
   rrRef.current = readReceipts;
+  const unreadRef = useRef(unread); // espelho pra ler o não-lido fora dos updaters
+  unreadRef.current = unread;
   const lastTypingSent = useRef(0); // throttle do "estou digitando"
   const typingStopTimer = useRef<number | undefined>(undefined); // agenda o "parei"
   const incomingTypingTimer = useRef<number | undefined>(undefined); // limpa o "par digitando"
@@ -125,13 +128,28 @@ export default function App() {
       /* cosmético */
     }
   }, []);
+  const PAGE = 300;
   const loadMessages = useCallback(async (convo: string) => {
     try {
-      setMessages(await api.messagesList(convo));
+      const msgs = await api.messagesList(convo, null, PAGE);
+      setMessages(msgs);
+      setHasMore(msgs.length >= PAGE);
     } catch (e) {
       setError(String(e));
     }
   }, []);
+  const loadOlder = useCallback(async () => {
+    const convo = selectedRef.current;
+    if (!convo) return;
+    try {
+      const oldest = messages[0]?.id;
+      const older = await api.messagesList(convo, oldest ?? null, PAGE);
+      if (older.length) setMessages((prev) => [...older, ...prev]);
+      setHasMore(older.length >= PAGE);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [messages]);
   const loadKw = useCallback((node: string) => {
     api.keywordStatus(node).then(setKw).catch(() => setKw(null));
   }, []);
@@ -207,11 +225,9 @@ export default function App() {
             setTypingConvo((cur) => (cur === m.peer ? null : cur));
             doMarkRead(m.peer);
           } else {
-            setUnread((prev) => {
-              const n = (prev[m.peer] ?? 0) + 1;
-              api.unreadSet(m.peer, n).catch(() => {});
-              return { ...prev, [m.peer]: n };
-            });
+            const n = (unreadRef.current[m.peer] ?? 0) + 1;
+            api.unreadSet(m.peer, n).catch(() => {});
+            setUnread((prev) => ({ ...prev, [m.peer]: n }));
           }
           flushQueue(m.peer);
         }),
@@ -302,11 +318,10 @@ export default function App() {
       loadMessages(convo);
       loadReactions(convo);
       loadKw(splitConvo(convo).node);
-      setUnread((prev) => {
-        if (!prev[convo]) return prev;
+      if (unreadRef.current[convo]) {
         api.unreadSet(convo, 0).catch(() => {});
-        return { ...prev, [convo]: 0 };
-      });
+        setUnread((prev) => ({ ...prev, [convo]: 0 }));
+      }
       doMarkRead(convo);
       api.sendProfile(convo).catch(() => {});
       flushQueue(convo);
@@ -529,6 +544,8 @@ export default function App() {
         reactions={reactions}
         onReact={handleReact}
         onForward={(m) => setForwarding(m)}
+        hasMore={hasMore}
+        onLoadOlder={loadOlder}
         onDraftChange={handleDraftChange}
         onSend={handleSend}
         onAttach={handleAttach}
