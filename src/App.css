@@ -153,6 +153,47 @@ body {
 .pair-cta:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px;
+  padding: 0 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.sidebar-search .search-ico {
+  font-size: 12px;
+  opacity: 0.6;
+  flex: none;
+}
+.sidebar-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 0;
+  font-size: 13px;
+  outline: none;
+}
+.search-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.search-group {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 700;
+  padding: 10px 12px 4px;
+}
 .sidebar-tabs {
   display: flex;
   gap: 4px;

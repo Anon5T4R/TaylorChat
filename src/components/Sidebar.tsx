@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Contact, ConvoSummary, MyIdentity, Profile, Thread } from "../lib/types";
+import * as api from "../lib/api";
 import { shortId, shortTime, splitConvo } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
@@ -30,7 +31,36 @@ export function Sidebar({
   onOpenSettings,
 }: Props) {
   const [tab, setTab] = useState<"chats" | "contacts">("chats");
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<api.SearchHit[]>([]);
+  const sq = q.trim();
+  const sqLower = sq.toLowerCase();
+
+  // Busca de mensagens (backend, decifra e casa) com um pequeno debounce.
+  useEffect(() => {
+    if (!sq) {
+      setHits([]);
+      return;
+    }
+    let alive = true;
+    const id = setTimeout(() => {
+      api.searchMessages(sq, 30).then((h) => alive && setHits(h)).catch(() => {});
+    }, 180);
+    return () => {
+      alive = false;
+      clearTimeout(id);
+    };
+  }, [sq]);
+
   const byNode = new Map(contacts.map((c) => [c.nodeId, c]));
+  const contactHits = sq
+    ? contacts.filter(
+        (c) =>
+          (c.nickname || "").toLowerCase().includes(sqLower) ||
+          (c.profileName || "").toLowerCase().includes(sqLower) ||
+          c.nodeId.includes(sqLower),
+      )
+    : [];
   const rows = [...threads].sort(
     (a, b) => (summaries[b.convo]?.ts ?? 0) - (summaries[a.convo]?.ts ?? 0),
   );
@@ -69,6 +99,73 @@ export function Sidebar({
         ＋ {t("sidebar.pair")}
       </button>
 
+      <div className="sidebar-search">
+        <span className="search-ico">🔍</span>
+        <input
+          value={q}
+          placeholder={t("sidebar.search")}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {q && (
+          <button className="search-clear" onClick={() => setQ("")} title="✕">
+            ✕
+          </button>
+        )}
+      </div>
+
+      {sq ? (
+        <div className="contacts">
+          {contactHits.length === 0 && hits.length === 0 && (
+            <div className="empty">
+              <p>{t("sidebar.searchNone")}</p>
+            </div>
+          )}
+          {contactHits.length > 0 && <div className="search-group">{t("sidebar.searchContacts")}</div>}
+          {contactHits.map((c) => {
+            const name = c.nickname || c.profileName || shortId(c.nodeId);
+            return (
+              <button
+                key={`c-${c.nodeId}`}
+                className={`contact ${selected && splitConvo(selected).node === c.nodeId ? "is-active" : ""}`}
+                onClick={() => onSelect(c.nodeId)}
+              >
+                <Avatar nodeId={c.nodeId} name={name} avatar={c.avatar} />
+                <span className="contact-body">
+                  <span className="contact-top">
+                    <span className="contact-name">{name}</span>
+                  </span>
+                  <span className="contact-preview">
+                    <code>{shortId(c.nodeId)}</code>
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+          {hits.length > 0 && <div className="search-group">{t("sidebar.searchMessages")}</div>}
+          {hits.map((h, i) => {
+            const node = splitConvo(h.convo).node;
+            const c = byNode.get(node);
+            const base = c?.nickname || c?.profileName || shortId(node);
+            return (
+              <button
+                key={`h-${i}`}
+                className={`contact ${selected === h.convo ? "is-active" : ""}`}
+                onClick={() => onSelect(h.convo)}
+              >
+                <Avatar nodeId={node} name={base} avatar={c?.avatar} />
+                <span className="contact-body">
+                  <span className="contact-top">
+                    <span className="contact-name">{base}</span>
+                    <span className="contact-time">{shortTime(h.ts)}</span>
+                  </span>
+                  <span className="contact-preview">{h.snippet}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+      <>
       <div className="sidebar-tabs">
         <button
           className={`sidebar-tab ${tab === "chats" ? "is-active" : ""}`}
@@ -155,6 +252,8 @@ export function Sidebar({
           );
         })}
       </div>
+      )}
+      </>
       )}
     </aside>
   );

@@ -16,6 +16,23 @@ use tauri::{Manager, WindowEvent};
 
 use db::{Db, Message};
 use identity::Identity;
+use tauri_plugin_notification::NotificationExt;
+
+/// Notificação de desktop pra mensagem recebida — só quando a janela NÃO está focada
+/// (senão o usuário já está vendo). Chamada pela camada de rede ao receber. `node` é o
+/// node_id puro; o título vira o nome do contato. Best-effort: nunca estoura.
+pub fn notify_incoming(app: &tauri::AppHandle, node: &str, preview: &str) {
+    let focused = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    if focused {
+        return;
+    }
+    let state = app.state::<Db>();
+    let title = db::contact_name(&state, node);
+    let _ = app.notification().builder().title(title).body(preview).show();
+}
 
 /// Arquivo passado no lançamento (reservado; o TaylorChat não associa extensões por ora).
 #[tauri::command(async)]
@@ -333,6 +350,24 @@ async fn peer_online(app: tauri::AppHandle, peer: String) -> Result<bool, String
     Ok(net::watch(&app, node).await)
 }
 
+/// Reflete o total de não-lidos na bandeja (tooltip) e no título da janela — o "badge"
+/// de desktop. O Windows mostra o título no hover da taskbar e no Alt+Tab. count=0 volta
+/// ao nome limpo.
+#[tauri::command(async)]
+fn set_badge(app: tauri::AppHandle, count: u32) {
+    let text = if count > 0 {
+        format!("TaylorChat ({count})")
+    } else {
+        "TaylorChat".to_string()
+    };
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(&text));
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_title(&text);
+    }
+}
+
 /// Lista todos os stickers salvos (todos os pacotes).
 #[tauri::command(async)]
 fn stickers_list(app: tauri::AppHandle) -> Result<Vec<media::Sticker>, String> {
@@ -353,6 +388,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Db::default())
         .manage(Mutex::new(llm::LlmState::default()))
         .setup(|app| {
@@ -421,6 +457,10 @@ pub fn run() {
             net_status,
             net_log,
             peer_online,
+            set_badge,
+            db::unread_list,
+            db::unread_set,
+            db::search_messages,
             set_keyword,
             keyword_status,
             audit_conversation,

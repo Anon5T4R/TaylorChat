@@ -66,6 +66,25 @@ export const pickAndCreateSticker = async (pack: string): Promise<string | null>
 /// Última mensagem de cada conversa (prévia + ordenação da sidebar).
 export const conversationsSummary = () => invoke<ConvoSummary[]>("conversations_summary");
 
+// ── Não-lidos persistidos + badge de desktop ─────────────────────────────
+export interface Unread {
+  convo: string;
+  n: number;
+}
+export const unreadList = () => invoke<Unread[]>("unread_list");
+export const unreadSet = (convo: string, n: number) => invoke<void>("unread_set", { convo, n });
+/// Reflete o total de não-lidos na bandeja + título da janela (badge de desktop).
+export const setBadge = (count: number) => invoke<void>("set_badge", { count });
+
+// ── Busca global ──────────────────────────────────────────────────────────
+export interface SearchHit {
+  convo: string;
+  snippet: string;
+  ts: number;
+}
+export const searchMessages = (query: string, limit = 30) =>
+  invoke<SearchHit[]>("search_messages", { query, limit });
+
 // ── Conversas (multichat) ────────────────────────────────────────────────
 export const threadsList = () => invoke<Thread[]>("threads_list");
 export const threadCreate = (convo: string, name: string) =>

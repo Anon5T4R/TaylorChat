@@ -180,6 +180,12 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
          )",
         [],
     );
+    // Não-lidos por conversa, persistidos (antes viviam só no estado do React e sumiam ao
+    // reiniciar — L3 da revisão). O front continua decidindo quando conta; aqui só guarda.
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS unread (convo TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
+        [],
+    );
     // Backfill: contatos salvos antes de a coluna threads existir (ou por um contact_add
     // que não criava a conversa principal) precisam da sua thread principal, senão somem
     // da sidebar, que lista threads. Idempotente.
@@ -340,6 +346,48 @@ pub fn messages_list(db: State<'_, Db>, peer: String) -> Result<Vec<Message>, St
         .collect())
 }
 
+// ── Busca global de mensagens (por texto, entre todas as conversas) ────────────
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub convo: String,
+    pub snippet: String,
+    pub ts: i64,
+}
+
+/// Procura `query` no texto de todas as mensagens (decifra em memória), da mais recente
+/// pra mais antiga, parando ao juntar `limit` acertos. Só mensagens de texto (arquivo
+/// casa por nome via a prévia da conversa). Simples e limitado — v1 da busca.
+#[tauri::command(async)]
+pub fn search_messages(db: State<'_, Db>, query: String, limit: i64) -> Result<Vec<SearchHit>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 200) as usize;
+    let raw: Vec<(String, Vec<u8>, i64)> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT peer, body, ts FROM messages WHERE kind='text' ORDER BY ts DESC, id DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
+    let mut hits = Vec::new();
+    for (convo, blob, ts) in raw {
+        let text = dec_text(&db, &blob);
+        if text.to_lowercase().contains(&q) {
+            let snippet: String = text.chars().take(100).collect();
+            hits.push(SearchHit { convo, snippet, ts });
+            if hits.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(hits)
+}
+
 /// Garante que o par existe como contato (auto-salvar ao receber de alguém novo — sem
 /// isso a conversa ficaria invisível). Também garante a conversa principal (convo =
 /// node_id). Nome vazio = a UI mostra o id encurtado.
@@ -360,11 +408,82 @@ pub fn contact_ensure(db: &Db, node_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Nome de exibição de um contato (apelido meu ‖ nome do perfil dele ‖ id encurtado).
+/// Usado no título da notificação de desktop.
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))]
+pub fn contact_name(db: &Db, node: &str) -> String {
+    let short = || {
+        if node.len() > 12 {
+            format!("{}…{}", &node[..6], &node[node.len() - 4..])
+        } else {
+            node.to_string()
+        }
+    };
+    let guard = match db.conn.lock() {
+        Ok(g) => g,
+        Err(_) => return short(),
+    };
+    let Some(conn) = guard.as_ref() else { return short() };
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT nickname, profile_name FROM contacts WHERE node_id=?1",
+            rusqlite::params![node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    match row {
+        Some((nick, _)) if !nick.trim().is_empty() => nick,
+        Some((_, Some(pn))) if !pn.trim().is_empty() => pn,
+        _ => short(),
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub convo: String, // node_id (principal) ou node_id#threadId
     pub name: String,
+}
+
+// ── Não-lidos persistidos por conversa ─────────────────────────────────────────
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unread {
+    pub convo: String,
+    pub n: i64,
+}
+
+/// Não-lidos de todas as conversas (só as com n>0) — carregado no boot.
+#[tauri::command(async)]
+pub fn unread_list(db: State<'_, Db>) -> Result<Vec<Unread>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT convo, n FROM unread WHERE n > 0")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(Unread { convo: r.get(0)?, n: r.get(1)? }))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
+/// Grava o contador de não-lidos de uma conversa (n<=0 apaga a linha).
+#[tauri::command(async)]
+pub fn unread_set(db: State<'_, Db>, convo: String, n: i64) -> Result<(), String> {
+    with_conn!(db, conn, {
+        if n <= 0 {
+            conn.execute("DELETE FROM unread WHERE convo=?1", rusqlite::params![convo])
+                .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "INSERT INTO unread(convo, n) VALUES(?1, ?2)
+                 ON CONFLICT(convo) DO UPDATE SET n=excluded.n",
+                rusqlite::params![convo, n],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
 }
 
 /// Todas as conversas (principais + extras) pra sidebar. O front separa o node_id.

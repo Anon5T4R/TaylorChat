@@ -682,6 +682,8 @@ mod imp {
                 let body = iv["body"].as_str().unwrap_or_default();
                 let msg = crate::db::record_incoming(db, &convo, body, ts)?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
+                let preview: String = body.chars().take(120).collect();
+                crate::notify_incoming(app, peer_hex, &preview);
             }
             Some("file") => {
                 let filename = iv["filename"].as_str().unwrap_or("arquivo");
@@ -745,6 +747,12 @@ mod imp {
                 .to_string();
                 let msg = crate::db::record_file(db, &convo, "in", &meta, "received", Some(ts))?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
+                let preview = if iv["sticker"].as_bool().unwrap_or(false) {
+                    "🎨 sticker".to_string()
+                } else {
+                    format!("📎 {filename}")
+                };
+                crate::notify_incoming(app, peer_hex, &preview);
             }
             // Recibo de leitura: marca as MINHAS mensagens dessa conversa como lidas.
             Some("read") => {

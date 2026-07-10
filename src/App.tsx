@@ -50,6 +50,12 @@ export default function App() {
 
   useEffect(() => applyTheme(theme), [theme]);
 
+  // Total de não-lidos → badge de desktop (tooltip da bandeja + título da janela).
+  useEffect(() => {
+    const total = Object.values(unread).reduce((a, b) => a + b, 0);
+    api.setBadge(total).catch(() => {});
+  }, [unread]);
+
   const changeLang = (l: Lang) => {
     setI18nLang(l);
     setLangState(l);
@@ -151,6 +157,12 @@ export default function App() {
       await reloadThreads();
       await reloadSummaries();
       reloadProfile();
+      try {
+        const u = await api.unreadList();
+        if (u.length) setUnread(Object.fromEntries(u.map((x) => [x.convo, x.n])));
+      } catch {
+        /* não-lidos são cosméticos */
+      }
       unlisteners.push(
         await api.onMessageIn((m) => {
           reloadContacts();
@@ -160,7 +172,11 @@ export default function App() {
             setMessages((prev) => [...prev, m]);
             doMarkRead(m.peer);
           } else {
-            setUnread((prev) => ({ ...prev, [m.peer]: (prev[m.peer] ?? 0) + 1 }));
+            setUnread((prev) => {
+              const n = (prev[m.peer] ?? 0) + 1;
+              api.unreadSet(m.peer, n).catch(() => {});
+              return { ...prev, [m.peer]: n };
+            });
           }
           flushQueue(m.peer);
         }),
@@ -215,7 +231,11 @@ export default function App() {
       setSelected(convo);
       loadMessages(convo);
       loadKw(splitConvo(convo).node);
-      setUnread((prev) => (prev[convo] ? { ...prev, [convo]: 0 } : prev));
+      setUnread((prev) => {
+        if (!prev[convo]) return prev;
+        api.unreadSet(convo, 0).catch(() => {});
+        return { ...prev, [convo]: 0 };
+      });
       doMarkRead(convo);
       api.sendProfile(convo).catch(() => {});
       flushQueue(convo);
