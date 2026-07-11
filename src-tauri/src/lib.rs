@@ -34,7 +34,15 @@ pub fn notify_incoming(app: &tauri::AppHandle, node: &str, preview: &str) {
         return; // contato silenciado — sem notificação (mas o não-lido segue contando)
     }
     let title = db::contact_name(&state, node);
-    let _ = app.notification().builder().title(title).body(preview).show();
+    // Prévia do conteúdo é opcional (Configurações): quem não quer vazar o texto numa
+    // tela compartilhada vê só "quem", não "o quê". Default: mostra (ausente = ligado).
+    let show_preview = db::meta_get(&state, "notify_preview")
+        .ok()
+        .flatten()
+        .map(|b| b.as_slice() != b"0")
+        .unwrap_or(true);
+    let body = if show_preview { preview } else { "💬" };
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Arquivo passado no lançamento (reservado; o TaylorChat não associa extensões por ora).
@@ -191,8 +199,12 @@ async fn react(
     emoji: String,
 ) -> Result<(), String> {
     db::reaction_set(&db, &peer, target_ts, true, &emoji)?;
+    // Enfileira e tenta já; se o par estiver offline, o resend_all reenvia até o ACK.
+    db::pending_reaction_set(&db, &peer, target_ts, &emoji)?;
     let (node, thread) = split_convo(&peer);
-    let _ = net::send_reaction(&app, node, thread, target_ts, &emoji).await;
+    if net::send_reaction(&app, node, thread, target_ts, &emoji).await.is_ok() {
+        let _ = db::pending_reaction_remove(&db, &peer, target_ts);
+    }
     Ok(())
 }
 
@@ -221,6 +233,13 @@ async fn resend_all(app: tauri::AppHandle, db: tauri::State<'_, Db>) -> Result<u
         let (node, thread) = split_convo(&convo);
         if net::send_delete(&app, node, thread, ts).await.is_ok() {
             let _ = db::pending_delete_remove(&db, &convo, ts);
+        }
+    }
+    // Idem pras reações pendentes.
+    for (convo, ts, emoji) in db::pending_reactions_all(&db).unwrap_or_default() {
+        let (node, thread) = split_convo(&convo);
+        if net::send_reaction(&app, node, thread, ts, &emoji).await.is_ok() {
+            let _ = db::pending_reaction_remove(&db, &convo, ts);
         }
     }
     Ok(total)
@@ -394,6 +413,21 @@ fn net_log() -> Vec<String> {
     net::log_lines()
 }
 
+/// Se a notificação de desktop mostra a prévia do texto (default: sim).
+#[tauri::command(async)]
+fn get_notify_preview(db: tauri::State<'_, Db>) -> bool {
+    db::meta_get(&db, "notify_preview")
+        .ok()
+        .flatten()
+        .map(|b| b.as_slice() != b"0")
+        .unwrap_or(true)
+}
+
+#[tauri::command(async)]
+fn set_notify_preview(db: tauri::State<'_, Db>, on: bool) -> Result<(), String> {
+    db::meta_set(&db, "notify_preview", if on { b"1" } else { b"0" })
+}
+
 /// Começa a observar a presença do par (conexão quente + heartbeat ping/pong) e devolve
 /// o status agora. Daí em diante a UI recebe o evento `presence` a cada mudança —
 /// online/offline em tempo real, sem chute.
@@ -524,6 +558,8 @@ pub fn run() {
             net_log,
             peer_online,
             peer_unwatch,
+            get_notify_preview,
+            set_notify_preview,
             set_badge,
             db::unread_list,
             db::unread_set,

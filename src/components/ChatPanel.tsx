@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   onPresence,
@@ -182,9 +182,16 @@ export function ChatPanel({
   const [online, setOnline] = useState<boolean | null>(null); // null = verificando
   const [menuFor, setMenuFor] = useState<number | null>(null); // id da msg com menu aberto
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [showNewPill, setShowNewPill] = useState(false); // "nova mensagem ↓" (rolado pra cima)
   const searchRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const node = contact?.nodeId ?? null;
+
+  const scrollToBottom = () => {
+    endRef.current?.scrollIntoView({ block: "end" });
+    setShowNewPill(false);
+  };
 
   // Fecha o menu da bolha ao clicar fora (o clique no ⋯/menu usa stopPropagation).
   useEffect(() => {
@@ -233,19 +240,40 @@ export function ChatPanel({
 
   const prevFirstId = useRef<number | null>(null);
   const prevNode = useRef<string | null>(null);
-  useEffect(() => {
+  const prevLen = useRef(0);
+  const prevScrollHeight = useRef(0);
+  useLayoutEffect(() => {
+    const el = messagesRef.current;
     const firstId = messages[0]?.id ?? null;
+    const lastMsg = messages[messages.length - 1];
     const nodeChanged = prevNode.current !== node;
-    // Prepend (carregar antigas): a 1ª msg passou a ser mais antiga → NÃO rola pro fim,
-    // senão o "carregar mais antigas" jogava o usuário lá pra baixo.
+    // Prepend (carregar antigas): a 1ª msg ficou mais antiga.
     const prepended =
       !nodeChanged &&
       prevFirstId.current !== null &&
       firstId !== null &&
       firstId < prevFirstId.current;
+    // Append (mensagem nova no fim), sem ser troca de conversa nem prepend.
+    const appended = !nodeChanged && !prepended && messages.length > prevLen.current;
+
+    if (searchOpen) {
+      // não mexe no scroll durante a busca
+    } else if (prepended && el) {
+      // #10: mantém a posição — o conteúdo cresceu no topo, compensa o scroll.
+      el.scrollTop += el.scrollHeight - prevScrollHeight.current;
+    } else if (appended && el) {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      // #6: se estou lendo antigas (longe do fim) e não fui eu que mandei, mostra o pill.
+      if (nearBottom || lastMsg?.direction === "out") scrollToBottom();
+      else setShowNewPill(true);
+    } else {
+      scrollToBottom();
+    }
+
     prevFirstId.current = firstId;
     prevNode.current = node;
-    if (!searchOpen && !prepended) endRef.current?.scrollIntoView({ block: "end" });
+    prevLen.current = messages.length;
+    if (el) prevScrollHeight.current = el.scrollHeight;
   }, [messages, searchOpen, node]);
 
   // Ctrl+F abre/fecha a busca na conversa.
@@ -386,7 +414,15 @@ export function ChatPanel({
         </div>
       )}
 
-      <div className="messages">
+      <div
+        className="messages"
+        ref={messagesRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (showNewPill && el.scrollHeight - el.scrollTop - el.clientHeight < 120)
+            setShowNewPill(false);
+        }}
+      >
         {hasMore && !search && (
           <button className="load-older" onClick={onLoadOlder}>
             {t("chat.loadOlder")}
@@ -539,6 +575,12 @@ export function ChatPanel({
         })}
         <div ref={endRef} />
       </div>
+
+      {showNewPill && (
+        <button className="new-msg-pill" onClick={scrollToBottom}>
+          {t("chat.newMessages")} ↓
+        </button>
+      )}
 
       {stickerOpen && (
         <StickerPicker

@@ -338,6 +338,23 @@ body {
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+  position: relative;
+}
+.new-msg-pill {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 84px;
+  z-index: 6;
+  border: none;
+  background: var(--accent);
+  color: #04211d;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 .chat-empty {
   display: grid;

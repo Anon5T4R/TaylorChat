@@ -142,6 +142,9 @@ export interface NetStatus {
 }
 export const netStatus = () => invoke<NetStatus>("net_status");
 export const netLog = () => invoke<string[]>("net_log");
+/// Notificação de desktop mostra a prévia do texto? (default: sim)
+export const getNotifyPreview = () => invoke<boolean>("get_notify_preview");
+export const setNotifyPreview = (on: boolean) => invoke<void>("set_notify_preview", { on });
 /// Começa a observar a presença do par (conexão quente + heartbeat) e devolve o status
 /// agora. Depois disso, escute `onPresence` pra atualizações em tempo real.
 export const peerOnline = (peer: string) => invoke<boolean>("peer_online", { peer });

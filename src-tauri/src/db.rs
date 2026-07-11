@@ -223,6 +223,14 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
          )",
         [],
     );
+    // Reações pendentes (par offline): guarda a MINHA reação mais recente pra cada msg
+    // até o ACK; o resend_all reenvia. Sem isso a reação se perdia offline (#3 da revisão).
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS pending_reactions (
+             convo TEXT, target_ts INTEGER, emoji TEXT, PRIMARY KEY(convo, target_ts)
+         )",
+        [],
+    );
     // Backfill: contatos salvos antes de a coluna threads existir (ou por um contact_add
     // que não criava a conversa principal) precisam da sua thread principal, senão somem
     // da sidebar, que lista threads. Idempotente.
@@ -381,16 +389,22 @@ pub fn set_contact_info(
         if t.is_empty() { None } else { Some(t.to_string()) }
     };
     with_conn!(db, conn, {
+        // Upsert: se a linha do contato não existir (borda), cria — em vez de o salvar
+        // sumir silenciosamente (#9 da revisão).
         conn.execute(
-            "UPDATE contacts SET nickname=?1, phone=?2, email=?3, birthday=?4, notes=?5
-             WHERE node_id=?6",
+            "INSERT INTO contacts(node_id, nickname, added_ts, phone, email, birthday, notes)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(node_id) DO UPDATE SET
+                nickname=excluded.nickname, phone=excluded.phone, email=excluded.email,
+                birthday=excluded.birthday, notes=excluded.notes",
             rusqlite::params![
+                node_id,
                 nickname.trim(),
+                now_ms(),
                 opt(&phone),
                 opt(&email),
                 opt(&birthday),
-                opt(&notes),
-                node_id
+                opt(&notes)
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -788,6 +802,11 @@ pub fn mark_deleted(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
         rusqlite::params![empty, convo, ts],
     )
     .map_err(|e| e.to_string())?;
+    // Reações não fazem sentido numa mensagem apagada — some com elas (#7 da revisão).
+    let _ = conn.execute(
+        "DELETE FROM reactions WHERE convo=?1 AND target_ts=?2",
+        rusqlite::params![convo, ts],
+    );
     checkpoint_conn(conn);
     Ok(())
 }
@@ -822,6 +841,41 @@ pub fn pending_deletes_all(db: &Db) -> Result<Vec<(String, i64)>, String> {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
+pub fn pending_reaction_set(db: &Db, convo: &str, ts: i64, emoji: &str) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute(
+            "INSERT INTO pending_reactions(convo, target_ts, emoji) VALUES(?1, ?2, ?3)
+             ON CONFLICT(convo, target_ts) DO UPDATE SET emoji=excluded.emoji",
+            rusqlite::params![convo, ts, emoji],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn pending_reaction_remove(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
+    with_conn!(db, conn, {
+        conn.execute(
+            "DELETE FROM pending_reactions WHERE convo=?1 AND target_ts=?2",
+            rusqlite::params![convo, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+pub fn pending_reactions_all(db: &Db) -> Result<Vec<(String, i64, String)>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT convo, target_ts, emoji FROM pending_reactions")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     })

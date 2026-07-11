@@ -38,6 +38,7 @@ export function SettingsModal({
   const [log, setLog] = useState<string[]>([]);
   const [pName, setPName] = useState("");
   const [pAvatar, setPAvatar] = useState<string | null>(null);
+  const [notifyPreview, setNotifyPreview] = useState(true);
 
   const refreshProfile = () =>
     api.getProfile().then((p) => {
@@ -70,8 +71,14 @@ export function SettingsModal({
     window.addEventListener("keydown", onKey);
     refreshDiag();
     refreshProfile();
+    api.getNotifyPreview().then(setNotifyPreview).catch(() => {});
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const changeNotifyPreview = (b: boolean) => {
+    setNotifyPreview(b);
+    api.setNotifyPreview(b).catch(() => {});
+  };
 
   const runAudit = async () => {
     if (!auditPeer) return;
@@ -140,6 +147,18 @@ export function SettingsModal({
               type="checkbox"
               checked={readReceipts}
               onChange={(e) => onReadReceipts(e.target.checked)}
+            />
+          </label>
+
+          <label className="set-row">
+            <span>
+              {t("settings.notifyPreview")}
+              <small>{t("settings.notifyPreviewHint")}</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={notifyPreview}
+              onChange={(e) => changeNotifyPreview(e.target.checked)}
             />
           </label>
 
