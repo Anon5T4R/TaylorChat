@@ -5,6 +5,10 @@ export interface Contact {
   profileName?: string | null; // nome que ele definiu
   avatar?: string | null; // caminho do avatar dele (cache)
   muted?: boolean; // silenciado (sem notificação)
+  phone?: string | null; // ficha local (só minha)
+  email?: string | null;
+  birthday?: string | null;
+  notes?: string | null;
 }
 
 export interface Profile {

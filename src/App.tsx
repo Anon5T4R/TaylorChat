@@ -8,6 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatPanel } from "./components/ChatPanel";
 import { PairingModal } from "./components/PairingModal";
 import { ForwardModal } from "./components/ForwardModal";
+import { ContactProfile } from "./components/ContactProfile";
 import { AiPanel } from "./components/AiPanel";
 import { SettingsModal } from "./components/SettingsModal";
 
@@ -38,6 +39,7 @@ export default function App() {
   const [typingConvo, setTypingConvo] = useState<string | null>(null);
   const [reactions, setReactions] = useState<api.Reaction[]>([]);
   const [forwarding, setForwarding] = useState<Message | null>(null);
+  const [profileNode, setProfileNode] = useState<string | null>(null); // ficha do contato aberta
   const [hasMore, setHasMore] = useState(false); // há mensagens mais antigas pra carregar
 
   const [lang, setLangState] = useState<Lang>(getLang());
@@ -447,35 +449,43 @@ export default function App() {
     }
   }, [selected, reloadThreads, handleSelect]);
 
-  const handleRemoveContact = useCallback(async () => {
-    if (!selected) return;
-    const { node } = splitConvo(selected);
-    try {
-      // remove todas as conversas desse contato + o contato
-      for (const th of threads) {
-        if (splitConvo(th.convo).node === node) await api.threadDelete(th.convo);
-      }
-      await api.contactRemove(node);
-      setSelected(null);
-      setMessages([]);
-      await reloadContacts();
-      await reloadThreads();
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [selected, threads, reloadContacts, reloadThreads]);
-
-  const handleRenameContact = useCallback(
-    async (nickname: string) => {
-      if (!selected) return;
+  // Apaga um contato pelo node (usado pela ficha do contato): remove todas as conversas
+  // dele + o contato, fecha a ficha e limpa a seleção se era a conversa aberta.
+  const removeContactByNode = useCallback(
+    async (node: string) => {
       try {
-        await api.contactAdd(splitConvo(selected).node, nickname);
+        for (const th of threads) {
+          if (splitConvo(th.convo).node === node) await api.threadDelete(th.convo);
+        }
+        await api.contactRemove(node);
+        setProfileNode(null);
+        if (selected && splitConvo(selected).node === node) {
+          setSelected(null);
+          setMessages([]);
+        }
+        await reloadContacts();
+        await reloadThreads();
+        reloadSummaries();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [threads, selected, reloadContacts, reloadThreads, reloadSummaries],
+  );
+
+  const handleSaveInfo = useCallback(
+    async (
+      node: string,
+      f: { nickname: string; phone: string; email: string; birthday: string; notes: string },
+    ) => {
+      try {
+        await api.setContactInfo(node, f.nickname, f.phone, f.email, f.birthday, f.notes);
         await reloadContacts();
       } catch (e) {
         setError(String(e));
       }
     },
-    [selected, reloadContacts],
+    [reloadContacts],
   );
 
   const handleToggleMute = useCallback(async () => {
@@ -545,6 +555,7 @@ export default function App() {
         onSelect={handleSelect}
         onOpenPairing={() => setPairingOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenProfile={(node) => setProfileNode(node)}
       />
       <ChatPanel
         contact={selectedContact}
@@ -563,8 +574,7 @@ export default function App() {
         onAttach={handleAttach}
         onToggleAi={() => setAiOpen((v) => !v)}
         aiOpen={aiOpen}
-        onRename={handleRenameContact}
-        onRemove={handleRemoveContact}
+        onOpenProfile={() => selNode && setProfileNode(selNode)}
         onSetKeyword={handleSetKeyword}
         onClear={handleClear}
         onNewChat={handleNewChat}
@@ -584,6 +594,20 @@ export default function App() {
       {pairingOpen && me && (
         <PairingModal me={me} onClose={() => setPairingOpen(false)} onAdd={handleAddContact} />
       )}
+      {profileNode &&
+        (() => {
+          const c =
+            contacts.find((x) => x.nodeId === profileNode) ??
+            ({ nodeId: profileNode, nickname: "", addedTs: 0 } as Contact);
+          return (
+            <ContactProfile
+              contact={c}
+              onSave={handleSaveInfo}
+              onRemove={removeContactByNode}
+              onClose={() => setProfileNode(null)}
+            />
+          );
+        })()}
       {forwarding && (
         <ForwardModal
           threads={threads}

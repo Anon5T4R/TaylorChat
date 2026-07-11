@@ -25,6 +25,10 @@ pub struct Contact {
     pub profile_name: Option<String>, // nome que ELE definiu (perfil dele)
     pub avatar: Option<String>,       // caminho do avatar cacheado dele
     pub muted: bool,                  // silenciado (sem notificação de desktop)
+    pub phone: Option<String>,        // ficha local (só minha)
+    pub email: Option<String>,
+    pub birthday: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -180,6 +184,11 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
     // Silenciar: contato silenciado não gera notificação de desktop (mas segue contando
     // não-lidos, como no WhatsApp).
     let _ = conn.execute("ALTER TABLE contacts ADD COLUMN muted INTEGER NOT NULL DEFAULT 0", []);
+    // Ficha local do contato (só minha, não sincroniza): telefone/email/aniversário/notas.
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN phone TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN email TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN birthday TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN notes TEXT", []);
     // Multichat: cada conversa é uma linha aqui. `convo` = node_id (principal) ou
     // `node_id#threadId` (extra). A coluna `peer` das mensagens guarda esse `convo`.
     let _ = conn.execute(
@@ -274,7 +283,8 @@ pub fn contacts_list(db: State<'_, Db>) -> Result<Vec<Contact>, String> {
     with_conn!(db, conn, {
         let mut stmt = conn
             .prepare(
-                "SELECT node_id, nickname, added_ts, profile_name, avatar, muted FROM contacts
+                "SELECT node_id, nickname, added_ts, profile_name, avatar, muted,
+                        phone, email, birthday, notes FROM contacts
                  ORDER BY nickname, node_id",
             )
             .map_err(|e| e.to_string())?;
@@ -287,6 +297,10 @@ pub fn contacts_list(db: State<'_, Db>) -> Result<Vec<Contact>, String> {
                     profile_name: r.get(3)?,
                     avatar: r.get(4)?,
                     muted: r.get::<_, i64>(5)? != 0,
+                    phone: r.get(6)?,
+                    email: r.get(7)?,
+                    birthday: r.get(8)?,
+                    notes: r.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -349,6 +363,42 @@ pub fn contact_remove(db: State<'_, Db>, node_id: String) -> Result<(), String> 
 /// abrir uma conversa longa carregava E decifrava TUDO (L2). Ordena por `id` = ordem em
 /// que as coisas aconteceram NESTE aparelho — assim o relógio torto do par não embaralha
 /// a exibição (L1); o `ts` (hora mostrada + base da auditoria) continua o do remetente.
+/// Atualiza a ficha local do contato (apelido + telefone/email/aniversário/notas).
+/// Campos vazios viram NULL. `nickname` é o nome que EU dou (não o perfil dele).
+#[tauri::command(async)]
+pub fn set_contact_info(
+    db: State<'_, Db>,
+    node_id: String,
+    nickname: String,
+    phone: String,
+    email: String,
+    birthday: String,
+    notes: String,
+) -> Result<(), String> {
+    let node_id = node_id.trim().to_lowercase();
+    let opt = |s: &str| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    };
+    with_conn!(db, conn, {
+        conn.execute(
+            "UPDATE contacts SET nickname=?1, phone=?2, email=?3, birthday=?4, notes=?5
+             WHERE node_id=?6",
+            rusqlite::params![
+                nickname.trim(),
+                opt(&phone),
+                opt(&email),
+                opt(&birthday),
+                opt(&notes),
+                node_id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        checkpoint_conn(conn);
+        Ok(())
+    })
+}
+
 /// Silencia/dessilencia um contato (só afeta a notificação de desktop).
 #[tauri::command(async)]
 pub fn set_muted(db: State<'_, Db>, node_id: String, muted: bool) -> Result<(), String> {

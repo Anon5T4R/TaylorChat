@@ -16,6 +16,7 @@ interface Props {
   onSelect: (convo: string) => void;
   onOpenPairing: () => void;
   onOpenSettings: () => void;
+  onOpenProfile: (node: string) => void;
 }
 
 export function Sidebar({
@@ -29,6 +30,7 @@ export function Sidebar({
   onSelect,
   onOpenPairing,
   onOpenSettings,
+  onOpenProfile,
 }: Props) {
   const [tab, setTab] = useState<"chats" | "contacts">("chats");
   const [q, setQ] = useState("");
@@ -128,6 +130,10 @@ export function Sidebar({
                 key={`c-${c.nodeId}`}
                 className={`contact ${selected && splitConvo(selected).node === c.nodeId ? "is-active" : ""}`}
                 onClick={() => onSelect(c.nodeId)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onOpenProfile(c.nodeId);
+                }}
               >
                 <Avatar nodeId={c.nodeId} name={name} avatar={c.avatar} />
                 <span className="contact-body">
@@ -151,6 +157,10 @@ export function Sidebar({
                 key={`h-${i}`}
                 className={`contact ${selected === h.convo ? "is-active" : ""}`}
                 onClick={() => onSelect(h.convo)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onOpenProfile(node);
+                }}
               >
                 <Avatar nodeId={node} name={base} avatar={c?.avatar} />
                 <span className="contact-body">
@@ -236,6 +246,10 @@ export function Sidebar({
               key={th.convo}
               className={`contact ${selected === th.convo ? "is-active" : ""}`}
               onClick={() => onSelect(th.convo)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onOpenProfile(node);
+              }}
             >
               <Avatar nodeId={node} name={base} avatar={c?.avatar} />
               <span className="contact-body">

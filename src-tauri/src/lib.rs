@@ -542,6 +542,7 @@ pub fn run() {
             db::contact_add,
             db::contact_remove,
             db::set_muted,
+            db::set_contact_info,
             db::messages_list,
             db::message_set_state,
             db::clear_conversation,

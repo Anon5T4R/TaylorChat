@@ -24,6 +24,15 @@ export const contactRemove = (nodeId: string) => invoke<void>("contact_remove", 
 /// Silencia/dessilencia um contato (só afeta a notificação de desktop).
 export const setMuted = (nodeId: string, muted: boolean) =>
   invoke<void>("set_muted", { nodeId, muted });
+/// Atualiza a ficha local do contato (apelido + telefone/email/aniversário/notas).
+export const setContactInfo = (
+  nodeId: string,
+  nickname: string,
+  phone: string,
+  email: string,
+  birthday: string,
+  notes: string,
+) => invoke<void>("set_contact_info", { nodeId, nickname, phone, email, birthday, notes });
 
 // ── Mensagens ────────────────────────────────────────────────────────────
 /// Página de mensagens: as `limit` mais recentes antes de `beforeId` (ou as últimas).

@@ -63,8 +63,7 @@ interface Props {
   onAttach: () => void;
   onToggleAi: () => void;
   aiOpen: boolean;
-  onRename: (nickname: string) => void;
-  onRemove: () => void;
+  onOpenProfile: () => void;
   onSetKeyword: () => void;
   onClear: () => void;
   onNewChat: () => void;
@@ -168,8 +167,7 @@ export function ChatPanel({
   onAttach,
   onToggleAi,
   aiOpen,
-  onRename,
-  onRemove,
+  onOpenProfile,
   onSetKeyword,
   onClear,
   onNewChat,
@@ -312,17 +310,18 @@ export function ChatPanel({
   return (
     <main className="chat">
       <header className="chat-head">
-        <Avatar
-          nodeId={contact.nodeId}
-          name={contact.nickname || contact.profileName || contact.nodeId}
-          avatar={contact.avatar}
-        />
-        <div className="chat-head-body">
-          <strong>
-            {contact.nickname || contact.profileName || shortId(contact.nodeId)}
-            {threadName && <span className="thread-tag">· {threadName}</span>}
-          </strong>
-          <span className="chat-presence">
+        <button className="chat-head-id" title={t("chat.profileTip")} onClick={onOpenProfile}>
+          <Avatar
+            nodeId={contact.nodeId}
+            name={contact.nickname || contact.profileName || contact.nodeId}
+            avatar={contact.avatar}
+          />
+          <div className="chat-head-body">
+            <strong>
+              {contact.nickname || contact.profileName || shortId(contact.nodeId)}
+              {threadName && <span className="thread-tag">· {threadName}</span>}
+            </strong>
+            <span className="chat-presence">
             {peerTyping ? (
               <span className="typing-label">{t("chat.typing")}</span>
             ) : (
@@ -333,9 +332,10 @@ export function ChatPanel({
                 {online === true ? t("chat.online") : online === false ? t("chat.offline") : t("chat.checking")}
               </>
             )}
-            <code className="presence-id">{shortId(contact.nodeId)}</code>
-          </span>
-        </div>
+              <code className="presence-id">{shortId(contact.nodeId)}</code>
+            </span>
+          </div>
+        </button>
         <div className="chat-head-actions">
           <button
             className={`btn-hdr ${searchOpen ? "is-active" : ""}`}
@@ -369,25 +369,6 @@ export function ChatPanel({
           </button>
           <button className="btn-hdr" title={t("chat.newChatTip")} onClick={onNewChat}>
             ➕
-          </button>
-          <button
-            className="btn-hdr"
-            title={t("chat.renameTip")}
-            onClick={() => {
-              const n = window.prompt(t("chat.renamePrompt"), contact.nickname);
-              if (n !== null) onRename(n.trim());
-            }}
-          >
-            ✏️
-          </button>
-          <button
-            className="btn-hdr"
-            title={t("chat.removeTip")}
-            onClick={() => {
-              if (window.confirm(t("chat.removeConfirm"))) onRemove();
-            }}
-          >
-            🗑
           </button>
           <button
             className={`btn-ai ${aiOpen ? "is-active" : ""}`}
