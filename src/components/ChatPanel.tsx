@@ -266,9 +266,11 @@ export function ChatPanel({
       // #6: se estou lendo antigas (longe do fim) e não fui eu que mandei, mostra o pill.
       if (nearBottom || lastMsg?.direction === "out") scrollToBottom();
       else setShowNewPill(true);
-    } else {
-      scrollToBottom();
+    } else if (nodeChanged) {
+      scrollToBottom(); // abriu/trocou a conversa → desce
     }
+    // senão: atualização in-place (recibo de leitura, apagar, mesmo tamanho) — NÃO mexe
+    // no scroll, senão qualquer refresh jogava o usuário pro fim mesmo lendo antigas.
 
     prevFirstId.current = firstId;
     prevNode.current = node;
