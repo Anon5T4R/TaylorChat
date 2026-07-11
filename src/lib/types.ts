@@ -25,6 +25,7 @@ export interface Message {
   ts: number;
   state: string; // out: queued|sent|delivered|read ; in: received
   replyTo?: number | null; // ts da mensagem citada (responder)
+  replyPreview?: string | null; // trecho da citada (renderiza sem lookup)
   deleted?: boolean; // apagada para todos
 }
 

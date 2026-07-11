@@ -59,7 +59,7 @@ interface Props {
   hasMore?: boolean;
   onLoadOlder: () => void;
   onDraftChange: (v: string) => void;
-  onSend: (body: string, replyTo?: number | null) => void;
+  onSend: (body: string, replyTo?: number | null, replyPreview?: string | null) => void;
   onAttach: () => void;
   onToggleAi: () => void;
   aiOpen: boolean;
@@ -311,7 +311,12 @@ export function ChatPanel({
   const submit = () => {
     const body = draft.trim();
     if (!body) return;
-    onSend(body, replyingTo?.ts ?? null);
+    const preview = replyingTo
+      ? replyingTo.kind === "file"
+        ? "📎"
+        : replyingTo.body.slice(0, 90)
+      : null;
+    onSend(body, replyingTo?.ts ?? null, preview);
     onDraftChange("");
     setReplyingTo(null);
   };
@@ -518,14 +523,18 @@ export function ChatPanel({
                 )}
                 {m.replyTo != null &&
                   (() => {
-                    const q = messages.find((x) => x.ts === m.replyTo);
-                    const txt = !q
-                      ? t("msg.quoteGone")
-                      : q.deleted
-                        ? t("msg.deleted")
-                        : q.kind === "file"
-                          ? "📎"
-                          : q.body.slice(0, 90);
+                    // Usa o trecho guardado (#4); só cai no lookup pra msgs antigas (pré-migração).
+                    let txt = m.replyPreview ?? "";
+                    if (!txt) {
+                      const q = messages.find((x) => x.ts === m.replyTo);
+                      txt = !q
+                        ? t("msg.quoteGone")
+                        : q.deleted
+                          ? t("msg.deleted")
+                          : q.kind === "file"
+                            ? "📎"
+                            : q.body.slice(0, 90);
+                    }
                     return <div className="bubble-quote">{txt}</div>;
                   })()}
                 {m.deleted ? (

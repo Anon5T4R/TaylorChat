@@ -80,14 +80,16 @@ async fn send_message(
     peer: String,
     body: String,
     reply_to: Option<i64>,
+    reply_preview: Option<String>,
 ) -> Result<Message, String> {
     let body = body.trim().to_string();
     if body.is_empty() {
         return Err("mensagem vazia".into());
     }
     let (node, thread) = split_convo(&peer);
-    let mut msg = db::enqueue(&db, &peer, &body, reply_to)?;
-    match net::send_text(&app, node, thread, &body, msg.ts, reply_to).await {
+    let mut msg = db::enqueue(&db, &peer, &body, reply_to, reply_preview.as_deref())?;
+    match net::send_text(&app, node, thread, &body, msg.ts, reply_to, reply_preview.as_deref()).await
+    {
         Ok(()) => {
             // O ACK do receptor confirma a entrega.
             db::set_state(&db, msg.id, "delivered")?;
@@ -179,7 +181,7 @@ async fn delete_for_everyone(
     peer: String,
     target_ts: i64,
 ) -> Result<(), String> {
-    db::mark_deleted(&db, &peer, target_ts)?;
+    db::mark_deleted(&db, &peer, target_ts, "out")?; // apago a MINHA mensagem
     // Enfileira e tenta já; se o par estiver offline, o resend_all reenvia até o ACK.
     db::pending_delete_add(&db, &peer, target_ts)?;
     let (node, thread) = split_convo(&peer);
@@ -284,7 +286,9 @@ async fn do_resend(app: &tauri::AppHandle, db: &Db, peer: &str) -> Result<u32, S
             .await
             .is_ok()
         } else {
-            net::send_text(&app, node, thread, &m.body, m.ts, m.reply_to).await.is_ok()
+            net::send_text(&app, node, thread, &m.body, m.ts, m.reply_to, m.reply_preview.as_deref())
+                .await
+                .is_ok()
         };
         if !ok {
             break;

@@ -41,8 +41,9 @@ pub struct Message {
     pub body: String,      // text: o texto; file: JSON {filename,mime,size,localPath?}
     pub ts: i64,
     pub state: String,          // out: queued|sent|delivered|read ; in: received
-    pub reply_to: Option<i64>,  // ts da mensagem citada (responder)
-    pub deleted: bool,          // apagada para todos (soft-delete)
+    pub reply_to: Option<i64>,       // ts da mensagem citada (responder)
+    pub reply_preview: Option<String>, // trecho da citada (renderiza sem lookup)
+    pub deleted: bool,               // apagada para todos (soft-delete)
 }
 
 /// Consolida o WAL no arquivo principal (TRUNCATE zera o diário). Sem isso os
@@ -174,6 +175,9 @@ pub fn init(app: &tauri::AppHandle, identity_secret: &[u8; 32]) -> Result<(), St
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'", []);
     // Responder/citar: `reply_to` = ts da mensagem citada (mesmo ts nos 2 lados).
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_to INTEGER", []);
+    // Trecho da mensagem citada, guardado junto (renderiza a citação sem depender de a
+    // original estar carregada na página — #4 da revisão).
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN reply_preview TEXT", []);
     // Apagada (para todos): soft-delete — mantém a linha, esvazia o corpo, marca a flag.
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0", []);
     // Palavra-chave por contato: `kw` = a minha (cifrada), `peer_kw_hash` = o hash que o par mandou.
@@ -454,36 +458,39 @@ pub fn messages_list(
     let limit = limit.unwrap_or(300).clamp(1, 100_000);
     let before = before_id.unwrap_or(i64::MAX);
     // Lê as linhas cruas (corpo cifrado) e decifra depois de soltar o lock da conexão.
-    let raw: Vec<(i64, String, String, String, Vec<u8>, i64, String, Option<i64>, i64)> =
-        with_conn!(db, conn, {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, peer, direction, kind, body, ts, state, reply_to, deleted
-                     FROM messages WHERE peer=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(rusqlite::params![peer, before, limit], |r| {
-                    Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
-                        r.get(7)?, r.get(8)?,
-                    ))
-                })
-                .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-        });
+    type Row = (i64, String, String, String, Vec<u8>, i64, String, Option<i64>, Option<String>, i64);
+    let raw: Vec<Row> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, peer, direction, kind, body, ts, state, reply_to, reply_preview, deleted
+                 FROM messages WHERE peer=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![peer, before, limit], |r| {
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
+                    r.get(7)?, r.get(8)?, r.get(9)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
     let mut out: Vec<Message> = raw
         .into_iter()
-        .map(|(id, peer, direction, kind, body, ts, state, reply_to, deleted)| Message {
-            id,
-            peer,
-            direction,
-            kind,
-            body: if deleted != 0 { String::new() } else { dec_text(&db, &body) },
-            ts,
-            state,
-            reply_to,
-            deleted: deleted != 0,
+        .map(|(id, peer, direction, kind, body, ts, state, reply_to, reply_preview, deleted)| {
+            Message {
+                id,
+                peer,
+                direction,
+                kind,
+                body: if deleted != 0 { String::new() } else { dec_text(&db, &body) },
+                ts,
+                state,
+                reply_to,
+                reply_preview,
+                deleted: deleted != 0,
+            }
         })
         .collect();
     out.reverse(); // veio em id DESC (mais novas primeiro) → volta pra ordem crescente
@@ -696,6 +703,7 @@ fn insert_message(
     state: &str,
     ts: Option<i64>,
     reply_to: Option<i64>,
+    reply_preview: Option<&str>,
 ) -> Result<Message, String> {
     // (contato/thread são garantidos pela camada de rede, que tem o node_id puro)
     let ts = ts.unwrap_or_else(now_ms);
@@ -703,9 +711,9 @@ fn insert_message(
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
     let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
     conn.execute(
-        "INSERT INTO messages(peer, direction, kind, body, ts, state, reply_to)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![peer, direction, kind, blob, ts, state, reply_to],
+        "INSERT INTO messages(peer, direction, kind, body, ts, state, reply_to, reply_preview)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![peer, direction, kind, blob, ts, state, reply_to, reply_preview],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -718,6 +726,7 @@ fn insert_message(
         ts,
         state: state.into(),
         reply_to,
+        reply_preview: reply_preview.map(String::from),
         deleted: false,
     })
 }
@@ -725,8 +734,14 @@ fn insert_message(
 /// Persiste uma mensagem de texto de saída como `queued` e devolve a linha pra UI.
 /// O `ts` gerado aqui é transmitido ao par (ver lib::send_message). `reply_to` = ts da
 /// mensagem citada (responder), se houver.
-pub fn enqueue(db: &Db, peer: &str, body: &str, reply_to: Option<i64>) -> Result<Message, String> {
-    insert_message(db, peer, "out", "text", body, "queued", None, reply_to)
+pub fn enqueue(
+    db: &Db,
+    peer: &str,
+    body: &str,
+    reply_to: Option<i64>,
+    reply_preview: Option<&str>,
+) -> Result<Message, String> {
+    insert_message(db, peer, "out", "text", body, "queued", None, reply_to, reply_preview)
 }
 
 /// Registra uma mensagem de arquivo (metadados JSON em `body`, `kind='file'`).
@@ -738,7 +753,7 @@ pub fn record_file(
     state: &str,
     ts: Option<i64>,
 ) -> Result<Message, String> {
-    insert_message(db, peer, direction, "file", meta_json, state, ts, None)
+    insert_message(db, peer, direction, "file", meta_json, state, ts, None, None)
 }
 
 /// Atualiza o estado de uma mensagem (queued→sent→delivered→read). Não-comando.
@@ -759,8 +774,9 @@ pub fn record_incoming(
     plaintext: &str,
     ts: i64,
     reply_to: Option<i64>,
+    reply_preview: Option<&str>,
 ) -> Result<Message, String> {
-    insert_message(db, peer, "in", "text", plaintext, "received", Some(ts), reply_to)
+    insert_message(db, peer, "in", "text", plaintext, "received", Some(ts), reply_to, reply_preview)
 }
 
 #[tauri::command(async)]
@@ -793,13 +809,17 @@ pub fn message_delete(db: State<'_, Db>, id: i64) -> Result<(), String> {
 /// esvazia o corpo cifrado e marca a flag. Identifica pela chave (convo, ts) — a mesma
 /// nos dois aparelhos. Usado tanto pelo meu comando quanto ao receber o aviso do par.
 #[cfg_attr(not(feature = "p2p"), allow(dead_code))]
-pub fn mark_deleted(db: &Db, convo: &str, ts: i64) -> Result<(), String> {
+pub fn mark_deleted(db: &Db, convo: &str, ts: i64, direction: &str) -> Result<(), String> {
     let empty = enc_text(db, "")?;
     let guard = db.conn.lock().map_err(|_| "estado do banco corrompido".to_string())?;
     let conn = guard.as_ref().ok_or("banco não inicializado".to_string())?;
+    // `direction` desambigua o alvo: quando EU apago, é a minha 'out'; quando recebo o
+    // aviso, é a 'in' que veio do par. Sem isso, duas mensagens de mesmo ts (uma minha e
+    // uma dele, no mesmo ms) seriam apagadas juntas (#5 da revisão, jeito pragmático —
+    // sem precisar de um id único por mensagem, que teria dor de migração).
     conn.execute(
-        "UPDATE messages SET deleted=1, body=?1 WHERE peer=?2 AND ts=?3",
-        rusqlite::params![empty, convo, ts],
+        "UPDATE messages SET deleted=1, body=?1 WHERE peer=?2 AND ts=?3 AND direction=?4",
+        rusqlite::params![empty, convo, ts, direction],
     )
     .map_err(|e| e.to_string())?;
     // Reações não fazem sentido numa mensagem apagada — some com elas (#7 da revisão).
@@ -1124,23 +1144,23 @@ pub fn queued_convos(db: &Db) -> Result<Vec<String>, String> {
 
 /// Mensagens de saída ainda na fila (decifradas) pra um par — pro reenvio.
 pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
-    let raw: Vec<(i64, String, Vec<u8>, i64, Option<i64>)> = with_conn!(db, conn, {
+    let raw: Vec<(i64, String, Vec<u8>, i64, Option<i64>, Option<String>)> = with_conn!(db, conn, {
         let mut stmt = conn
             .prepare(
-                "SELECT id, kind, body, ts, reply_to FROM messages
+                "SELECT id, kind, body, ts, reply_to, reply_preview FROM messages
                  WHERE peer=?1 AND direction='out' AND state='queued' AND deleted=0 ORDER BY ts, id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params![peer], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     });
     Ok(raw
         .into_iter()
-        .map(|(id, kind, blob, ts, reply_to)| Message {
+        .map(|(id, kind, blob, ts, reply_to, reply_preview)| Message {
             id,
             peer: peer.into(),
             direction: "out".into(),
@@ -1149,6 +1169,7 @@ pub fn queued_out(db: &Db, peer: &str) -> Result<Vec<Message>, String> {
             ts,
             state: "queued".into(),
             reply_to,
+            reply_preview,
             deleted: false,
         })
         .collect())

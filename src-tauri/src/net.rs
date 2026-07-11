@@ -84,6 +84,7 @@ pub fn start(_app: tauri::AppHandle, _secret: [u8; 32]) {
     eprintln!("[taylorchat] rede P2P desativada (compile com --features p2p)");
 }
 #[cfg(not(feature = "p2p"))]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_text(
     _app: &tauri::AppHandle,
     _peer: &str,
@@ -91,6 +92,7 @@ pub async fn send_text(
     _body: &str,
     _ts: i64,
     _reply_to: Option<i64>,
+    _reply_preview: Option<&str>,
 ) -> Result<(), String> {
     Err("mensageria ao vivo requer build com --features p2p (Fase 3)".into())
 }
@@ -491,11 +493,15 @@ mod imp {
         body: &str,
         ts: i64,
         reply_to: Option<i64>,
+        reply_preview: Option<&str>,
     ) -> Result<(), String> {
         let _g = peer_lock(peer).lock_owned().await;
         let mut obj = json!({ "k": "text", "body": body, "ts": ts, "thread": thread });
         if let Some(rt) = reply_to {
             obj["replyTo"] = json!(rt);
+        }
+        if let Some(rp) = reply_preview {
+            obj["replyPreview"] = json!(rp);
         }
         let inner = obj.to_string();
         let (_conn, mut s, mut r) = send_header(app, peer, &inner, json!({})).await?;
@@ -838,7 +844,8 @@ mod imp {
             Some("text") => {
                 let body = iv["body"].as_str().unwrap_or_default();
                 let reply_to = iv["replyTo"].as_i64();
-                let msg = crate::db::record_incoming(db, &convo, body, ts, reply_to)?;
+                let reply_preview = iv["replyPreview"].as_str();
+                let msg = crate::db::record_incoming(db, &convo, body, ts, reply_to, reply_preview)?;
                 let _ = app.emit(EVENT_MESSAGE_IN, &msg);
                 let preview: String = body.chars().take(120).collect();
                 crate::notify_incoming(app, peer_hex, &preview);
@@ -920,7 +927,8 @@ mod imp {
             // Apagar para todos: o par apagou uma mensagem (identificada por ts).
             Some("delete") => {
                 let target_ts = iv["targetTs"].as_i64().unwrap_or(0);
-                crate::db::mark_deleted(db, &convo, target_ts)?;
+                // O par apagou a mensagem DELE → no meu banco é a 'in' que recebi dele.
+                crate::db::mark_deleted(db, &convo, target_ts, "in")?;
                 let _ = app.emit(EVENT_MSG_DELETED, &json!({ "peer": convo, "ts": target_ts }));
             }
             // Reação do par a uma mensagem minha (emoji vazio = removeu).

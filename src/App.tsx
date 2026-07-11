@@ -270,7 +270,9 @@ export default function App() {
         await api.onMsgDeleted((peer, ts) => {
           if (peer === selectedRef.current) {
             setMessages((prev) =>
-              prev.map((m) => (m.ts === ts ? { ...m, deleted: true, body: "" } : m)),
+              prev.map((m) =>
+                m.ts === ts && m.direction === "in" ? { ...m, deleted: true, body: "" } : m,
+              ),
             );
           }
           reloadSummaries();
@@ -332,11 +334,11 @@ export default function App() {
   );
 
   const handleSend = useCallback(
-    async (body: string, replyTo?: number | null) => {
+    async (body: string, replyTo?: number | null, replyPreview?: string | null) => {
       if (!selected) return;
       stopTyping();
       try {
-        const msg = await api.sendMessage(selected, body, replyTo);
+        const msg = await api.sendMessage(selected, body, replyTo, replyPreview);
         setMessages((prev) => [...prev, msg]);
         reloadSummaries();
       } catch (e) {
@@ -397,7 +399,9 @@ export default function App() {
       try {
         await api.deleteForEveryone(selected, ts);
         setMessages((prev) =>
-          prev.map((m) => (m.ts === ts ? { ...m, deleted: true, body: "" } : m)),
+          prev.map((m) =>
+            m.ts === ts && m.direction === "out" ? { ...m, deleted: true, body: "" } : m,
+          ),
         );
         reloadSummaries();
       } catch (e) {

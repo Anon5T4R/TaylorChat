@@ -39,8 +39,18 @@ export const setContactInfo = (
 export const messagesList = (peer: string, beforeId?: number | null, limit?: number) =>
   invoke<Message[]>("messages_list", { peer, beforeId: beforeId ?? null, limit: limit ?? null });
 export const clearConversation = (peer: string) => invoke<void>("clear_conversation", { peer });
-export const sendMessage = (peer: string, body: string, replyTo?: number | null) =>
-  invoke<Message>("send_message", { peer, body, replyTo: replyTo ?? null });
+export const sendMessage = (
+  peer: string,
+  body: string,
+  replyTo?: number | null,
+  replyPreview?: string | null,
+) =>
+  invoke<Message>("send_message", {
+    peer,
+    body,
+    replyTo: replyTo ?? null,
+    replyPreview: replyPreview ?? null,
+  });
 /// Apaga uma mensagem só pra mim (remove a linha local).
 export const messageDelete = (id: number) => invoke<void>("message_delete", { id });
 /// Apaga uma mensagem para todos (soft-delete + avisa o par por ts).
