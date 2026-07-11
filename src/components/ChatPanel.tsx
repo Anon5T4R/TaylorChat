@@ -64,7 +64,6 @@ interface Props {
   onToggleAi: () => void;
   aiOpen: boolean;
   onOpenProfile: () => void;
-  onSetKeyword: () => void;
   onClear: () => void;
   onNewChat: () => void;
   onSendSticker: (path: string) => void;
@@ -168,7 +167,6 @@ export function ChatPanel({
   onToggleAi,
   aiOpen,
   onOpenProfile,
-  onSetKeyword,
   onClear,
   onNewChat,
   onSendSticker,
@@ -291,7 +289,6 @@ export function ChatPanel({
   };
 
   const rows = Math.min(6, Math.max(1, draft.split("\n").length));
-  const kwClass = kw?.matches === true ? "kw-ok" : kw?.matches === false ? "kw-bad" : "";
   const q = search.trim().toLowerCase();
   const visible = q
     ? messages.filter((m) => {
@@ -343,13 +340,6 @@ export function ChatPanel({
             onClick={() => setSearchOpen((v) => !v)}
           >
             🔍
-          </button>
-          <button
-            className={`btn-hdr ${kwClass}`}
-            title={t("chat.kwTip")}
-            onClick={onSetKeyword}
-          >
-            🔑
           </button>
           <button
             className={`btn-hdr ${contact.muted ? "is-active" : ""}`}

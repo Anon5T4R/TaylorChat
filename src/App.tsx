@@ -511,18 +511,17 @@ export default function App() {
     }
   }, [selected, reloadSummaries]);
 
-  const handleSetKeyword = useCallback(async () => {
-    if (!selected) return;
-    const node = splitConvo(selected).node;
-    const word = window.prompt(t("kw.prompt"), kw?.word ?? "");
-    if (word === null) return;
-    try {
-      await api.setKeyword(node, word);
-      loadKw(node);
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [selected, kw, loadKw]);
+  const handleSaveKeyword = useCallback(
+    async (node: string, word: string) => {
+      try {
+        await api.setKeyword(node, word);
+        if (selected && splitConvo(selected).node === node) loadKw(node);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selected, loadKw],
+  );
 
   const handleAddContact = useCallback(
     async (nodeId: string, nickname: string) => {
@@ -575,7 +574,6 @@ export default function App() {
         onToggleAi={() => setAiOpen((v) => !v)}
         aiOpen={aiOpen}
         onOpenProfile={() => selNode && setProfileNode(selNode)}
-        onSetKeyword={handleSetKeyword}
         onClear={handleClear}
         onNewChat={handleNewChat}
         onSendSticker={handleSendSticker}
@@ -603,6 +601,7 @@ export default function App() {
             <ContactProfile
               contact={c}
               onSave={handleSaveInfo}
+              onSaveKeyword={handleSaveKeyword}
               onRemove={removeContactByNode}
               onClose={() => setProfileNode(null)}
             />

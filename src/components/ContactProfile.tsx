@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Contact } from "../lib/types";
+import { keywordStatus, type KeywordStatus } from "../lib/api";
 import { shortId } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { Avatar } from "./Avatar";
@@ -10,18 +11,21 @@ interface Props {
     nodeId: string,
     fields: { nickname: string; phone: string; email: string; birthday: string; notes: string },
   ) => void;
+  onSaveKeyword: (nodeId: string, word: string) => void;
   onRemove: (nodeId: string) => void;
   onClose: () => void;
 }
 
 /// Ficha do contato: nome/foto que ELE definiu (cacheados, só leitura) + campos locais
 /// meus (apelido, telefone, email, aniversário, notas). Aqui também mora o apagar contato.
-export function ContactProfile({ contact, onSave, onRemove, onClose }: Props) {
+export function ContactProfile({ contact, onSave, onSaveKeyword, onRemove, onClose }: Props) {
   const [nickname, setNickname] = useState(contact.nickname ?? "");
   const [phone, setPhone] = useState(contact.phone ?? "");
   const [email, setEmail] = useState(contact.email ?? "");
   const [birthday, setBirthday] = useState(contact.birthday ?? "");
   const [notes, setNotes] = useState(contact.notes ?? "");
+  const [keyword, setKeyword] = useState("");
+  const [kw, setKw] = useState<KeywordStatus | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -30,8 +34,30 @@ export function ContactProfile({ contact, onSave, onRemove, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Status da palavra-chave deste contato (confere/diverge/aguardando).
+  useEffect(() => {
+    keywordStatus(contact.nodeId)
+      .then((s) => {
+        setKw(s);
+        setKeyword(s.word ?? "");
+      })
+      .catch(() => setKw(null));
+  }, [contact.nodeId]);
+
+  const kwStatusText =
+    kw?.matches === true
+      ? t("kw.match")
+      : kw?.matches === false
+        ? t("kw.mismatch")
+        : kw?.hasMine
+          ? t("kw.waiting")
+          : t("kw.none");
+  const kwStatusClass =
+    kw?.matches === true ? "kw-ok" : kw?.matches === false ? "kw-bad" : "";
+
   const save = () => {
     onSave(contact.nodeId, { nickname, phone, email, birthday, notes });
+    if (keyword.trim() !== (kw?.word ?? "")) onSaveKeyword(contact.nodeId, keyword.trim());
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -77,6 +103,19 @@ export function ContactProfile({ contact, onSave, onRemove, onClose }: Props) {
           <label className="profile-field">
             <span>{t("profile.notes")}</span>
             <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </label>
+
+          <label className="profile-field">
+            <span>
+              🔑 {t("profile.keyword")}
+              {kw && <em className={`kw-badge ${kwStatusClass}`}>{kwStatusText}</em>}
+            </span>
+            <input
+              value={keyword}
+              placeholder={t("profile.keywordPh")}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+            <small className="profile-hint">{t("profile.keywordHint")}</small>
           </label>
 
           <button className="btn btn-primary profile-save" onClick={save}>
