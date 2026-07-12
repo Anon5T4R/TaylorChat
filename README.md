@@ -1,6 +1,6 @@
 # TaylorChat
 
-Mensageiro **P2P offline** da suíte Taylor: mensagens diretas entre pares, **sem servidor, sem cadastro, sem número de telefone**. Identidade é uma chave; você pareia com alguém por QR/convite e conversa ponta a ponta. Feito em Tauri 2 + React + Rust, com IA local (llama.cpp) opcional pra redigir/resumir/traduzir.
+Mensageiro **P2P offline** da suíte Local: mensagens diretas entre pares, **sem servidor, sem cadastro, sem número de telefone**. Identidade é uma chave; você pareia com alguém por QR/convite e conversa ponta a ponta. Feito em Tauri 2 + React + Rust, com IA local (llama.cpp) opcional pra redigir/resumir/traduzir.
 
 > Nome fora do padrão `Local*` de propósito: um mensageiro **não** é "local" — o ponto dele é falar com outra máquina.
 
