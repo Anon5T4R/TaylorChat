@@ -44,8 +44,8 @@ jobs:
 
       - name: Rust testes (build padrão)
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --locked
 
       - name: Rust testes (com rede p2p — iroh + double ratchet)
         working-directory: src-tauri
-        run: cargo test --features p2p
+        run: cargo test --locked --features p2p
