@@ -39,6 +39,73 @@
   --in: #ffffff;
 }
 
+/* ── Temas nomeados (paletas fixas, sobrepõem o accent do app) ───────── */
+:root[data-theme="nature"] {
+  --bg: #f5f7f2;
+  --bg-2: #ffffff;
+  --bg-3: #eef2ea;
+  --border: #e2e8dd;
+  --text: #2e3a2e;
+  --text-dim: #6f7d6f;
+  --accent: #7a9e7e;
+  --accent-2: #e8b4c8;
+  --out: #dbe8dc;
+  --in: #eef2ea;
+  --danger: #c0492f;
+}
+:root[data-theme="darkblue"] {
+  --bg: #0d1520;
+  --bg-2: #131f30;
+  --bg-3: #1a2942;
+  --border: #223049;
+  --text: #e2e8f0;
+  --text-dim: #8595ad;
+  --accent: #3b82f6;
+  --accent-2: #60a5fa;
+  --out: #1e4b8f;
+  --in: #1a2942;
+  --danger: #f87171;
+}
+:root[data-theme="calmgreen"] {
+  --bg: #f2f5f1;
+  --bg-2: #ffffff;
+  --bg-3: #e9efe7;
+  --border: #dde6dc;
+  --text: #24302a;
+  --text-dim: #6a7a6f;
+  --accent: #4f7d5e;
+  --accent-2: #6fa07e;
+  --out: #d5e6da;
+  --in: #e9efe7;
+  --danger: #c0492f;
+}
+:root[data-theme="pastelpink"] {
+  --bg: #fdf4f7;
+  --bg-2: #ffffff;
+  --bg-3: #f9eaf0;
+  --border: #f2dfe7;
+  --text: #3a2a30;
+  --text-dim: #8a7580;
+  --accent: #e8799f;
+  --accent-2: #f4a9c4;
+  --out: #fbd7e4;
+  --in: #f9eaf0;
+  --danger: #d84a6b;
+}
+:root[data-theme="punkprincess"] {
+  --bg: #120a1a;
+  --bg-2: #1a0f26;
+  --bg-3: #241533;
+  --border: #2c1c3d;
+  --text: #f0e6ff;
+  --text-dim: #9a86b5;
+  --accent: #ff2d95;
+  --accent-2: #2de2ff;
+  --out: #7a0f47;
+  --in: #241533;
+  --danger: #ff5470;
+}
+
 * {
   box-sizing: border-box;
 }

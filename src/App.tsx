@@ -12,7 +12,15 @@ import { ContactProfile } from "./components/ContactProfile";
 import { AiPanel } from "./components/AiPanel";
 import { SettingsModal } from "./components/SettingsModal";
 
-type Theme = "system" | "light" | "dark";
+type Theme =
+  | "system"
+  | "light"
+  | "dark"
+  | "nature"
+  | "darkblue"
+  | "calmgreen"
+  | "pastelpink"
+  | "punkprincess";
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement;

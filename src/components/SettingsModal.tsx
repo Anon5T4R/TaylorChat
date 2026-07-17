@@ -3,7 +3,15 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import { t, type Lang } from "../lib/i18n";
 
-type Theme = "system" | "light" | "dark";
+type Theme =
+  | "system"
+  | "light"
+  | "dark"
+  | "nature"
+  | "darkblue"
+  | "calmgreen"
+  | "pastelpink"
+  | "punkprincess";
 
 interface Props {
   theme: Theme;
@@ -126,6 +134,11 @@ export function SettingsModal({
               <option value="system">{t("settings.themeSystem")}</option>
               <option value="light">{t("settings.themeLight")}</option>
               <option value="dark">{t("settings.themeDark")}</option>
+              <option value="nature">{t("settings.themeNature")}</option>
+              <option value="darkblue">{t("settings.themeDarkblue")}</option>
+              <option value="calmgreen">{t("settings.themeCalmgreen")}</option>
+              <option value="pastelpink">{t("settings.themePastelpink")}</option>
+              <option value="punkprincess">{t("settings.themePunkprincess")}</option>
             </select>
           </label>
 
