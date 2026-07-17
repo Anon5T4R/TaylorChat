@@ -1,8 +1,11 @@
 :root {
-  --bg: #0f1419;
-  --bg-2: #161b22;
-  --bg-3: #1c232c;
-  --border: #29313c;
+  /* Base escura: quase-preto (L*6.1) levantado ~5 L*. Contraste maximo contra
+     tudo rouba o foco do accent. Escada bg < bg-2 < bg-3 < border preservada;
+     so o L* mudou (a/b intactos = matiz do tema preservado). */
+  --bg: #1a1e23;
+  --bg-2: #20252c;
+  --bg-3: #262e37;
+  --border: #343c47;
   --text: #e6edf3;
   --text-dim: #8b98a6;
   --accent: #3fb6a8;
@@ -17,92 +20,109 @@
 /* Tema claro: quando o SO prefere claro E o usuário não escolheu manualmente. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --bg: #f5f7fa;
-    --bg-2: #ffffff;
-    --bg-3: #eef1f5;
-    --border: #dde3ea;
+    /* Espelha o :root[data-theme="light"] abaixo. */
+    --bg: #ebedf0;
+    --bg-2: #f6f8fb;
+    --bg-3: #e4e7eb;
+    --border: #d3d9e0;
     --text: #11151a;
-    --text-dim: #64707d;
+    /* -2.75 L* (matiz intacto): o secundario tambem e pintado sobre --bg-3, a
+     superficie mais escura do par, onde estava em 4.07:1. */
+  --text-dim: #5d6976;
     --out: #d3f2ec;
-    --in: #ffffff;
+    --in: #f6f8fb;
   }
 }
 /* Escolha manual (Configurações) vence o SO. data-theme=dark usa o :root base. */
 :root[data-theme="light"] {
-  --bg: #f5f7fa;
-  --bg-2: #ffffff;
-  --bg-3: #eef1f5;
-  --border: #dde3ea;
+  /* Sem branco puro: --bg-2 (papel de --panel) e a bolha --in viram off-white
+     tingido com o matiz do --bg (L*~97.5); --bg desce ~3.5 L*. Escada
+     bg-3 < bg < bg-2 preservada (a que o app ja usava). */
+  --bg: #ebedf0;
+  --bg-2: #f6f8fb;
+  --bg-3: #e4e7eb;
+  --border: #d3d9e0;
   --text: #11151a;
-  --text-dim: #64707d;
+  /* -2.75 L* (matiz intacto): o secundario tambem e pintado sobre --bg-3, a
+     superficie mais escura do par, onde estava em 4.07:1. */
+  --text-dim: #5d6976;
   --out: #d3f2ec;
-  --in: #ffffff;
+  --in: #f6f8fb;
 }
 
 /* ── Temas nomeados (paletas fixas, sobrepõem o accent do app) ───────── */
+/* Aqui os nomes divergem do resto da suite: --bg-2 faz o papel de --panel e
+   --bg-3 o de --panel-2. A pass de superficie por nome de var nao os alcancou,
+   entao ficaram com os valores VELHOS (--bg-2 era #ffffff puro, o brilho que a
+   queixa aponta). Mapeados por papel, nao por nome. */
 :root[data-theme="nature"] {
-  --bg: #f5f7f2;
-  --bg-2: #ffffff;
-  --bg-3: #eef2ea;
-  --border: #e2e8dd;
+  --bg: #eef1e9;
+  --bg-2: #f8faf5;
+  --bg-3: #e4eade;
+  --border: #dbe3d4;
   --text: #2e3a2e;
-  --text-dim: #6f7d6f;
+  /* Secundario escurecido pra >= 4.5:1 contra a superficie, matiz preservado. */
+  --text-dim: #5f6c5f;
   --accent: #7a9e7e;
   --accent-2: #e8b4c8;
   --out: #dbe8dc;
-  --in: #eef2ea;
+  /* A bolha de entrada e a superficie secundaria (era o --bg-3 velho); segue ele. */
+  --in: #e4eade;
   --danger: #c0492f;
 }
 :root[data-theme="darkblue"] {
-  --bg: #0d1520;
-  --bg-2: #131f30;
-  --bg-3: #1a2942;
-  --border: #223049;
+  --bg: #16202e;
+  --bg-2: #1d2a3c;
+  --bg-3: #26374e;
+  --border: #2d3f59;
   --text: #e2e8f0;
-  --text-dim: #8595ad;
+  /* Clareado +4 L*: nos escuros o --bg-3 subiu, entao o secundario sobe junto. */
+  --text-dim: #8fa0b8;
   --accent: #3b82f6;
   --accent-2: #60a5fa;
   --out: #1e4b8f;
-  --in: #1a2942;
+  --in: #26374e;
   --danger: #f87171;
 }
 :root[data-theme="calmgreen"] {
-  --bg: #f2f5f1;
-  --bg-2: #ffffff;
-  --bg-3: #e9efe7;
-  --border: #dde6dc;
+  --bg: #eaf0e9;
+  --bg-2: #f7faf6;
+  --bg-3: #dfe8dd;
+  --border: #d5e0d3;
   --text: #24302a;
-  --text-dim: #6a7a6f;
+  /* Secundario escurecido pra >= 4.5:1 contra a superficie, matiz preservado. */
+  --text-dim: #5a6a5f;
   --accent: #4f7d5e;
   --accent-2: #6fa07e;
   --out: #d5e6da;
-  --in: #e9efe7;
+  --in: #dfe8dd;
   --danger: #c0492f;
 }
 :root[data-theme="pastelpink"] {
-  --bg: #fdf4f7;
-  --bg-2: #ffffff;
-  --bg-3: #f9eaf0;
-  --border: #f2dfe7;
+  --bg: #f8ebf0;
+  --bg-2: #fdf6f9;
+  --bg-3: #f2dde6;
+  --border: #ecd3de;
   --text: #3a2a30;
-  --text-dim: #8a7580;
+  /* Secundario escurecido pra >= 4.5:1 contra a superficie, matiz preservado. */
+  --text-dim: #73606a;
   --accent: #e8799f;
   --accent-2: #f4a9c4;
   --out: #fbd7e4;
-  --in: #f9eaf0;
+  --in: #f2dde6;
   --danger: #d84a6b;
 }
 :root[data-theme="punkprincess"] {
-  --bg: #120a1a;
-  --bg-2: #1a0f26;
-  --bg-3: #241533;
-  --border: #2c1c3d;
+  --bg: #1c1228;
+  --bg-2: #251733;
+  --bg-3: #32204a;
+  --border: #3a2850;
   --text: #f0e6ff;
-  --text-dim: #9a86b5;
+  --text-dim: #9b87b6;
   --accent: #ff2d95;
   --accent-2: #2de2ff;
   --out: #7a0f47;
-  --in: #241533;
+  --in: #32204a;
   --danger: #ff5470;
 }
 
