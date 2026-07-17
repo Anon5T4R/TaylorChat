@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "./lib/api";
-import type { Contact, ConvoSummary, Message, MyIdentity, Profile, Thread } from "./lib/types";
+import type { Contact, ConvoSummary, Message, MyIdentity, Profile, Theme, Thread } from "./lib/types";
 import { getLang, setLang as setI18nLang, t, type Lang } from "./lib/i18n";
 import { randomHex, splitConvo } from "./lib/ui";
 import { Sidebar } from "./components/Sidebar";
@@ -11,16 +11,6 @@ import { ForwardModal } from "./components/ForwardModal";
 import { ContactProfile } from "./components/ContactProfile";
 import { AiPanel } from "./components/AiPanel";
 import { SettingsModal } from "./components/SettingsModal";
-
-type Theme =
-  | "system"
-  | "light"
-  | "dark"
-  | "nature"
-  | "darkblue"
-  | "calmgreen"
-  | "pastelpink"
-  | "punkprincess";
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement;

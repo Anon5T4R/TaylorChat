@@ -2,16 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import { t, type Lang } from "../lib/i18n";
-
-type Theme =
-  | "system"
-  | "light"
-  | "dark"
-  | "nature"
-  | "darkblue"
-  | "calmgreen"
-  | "pastelpink"
-  | "punkprincess";
+import type { Theme } from "../lib/types";
 
 interface Props {
   theme: Theme;

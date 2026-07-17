@@ -1,3 +1,13 @@
+export type Theme =
+  | "system"
+  | "light"
+  | "dark"
+  | "nature"
+  | "darkblue"
+  | "calmgreen"
+  | "pastelpink"
+  | "punkprincess";
+
 export interface Contact {
   nodeId: string;
   nickname: string; // apelido que eu dei
