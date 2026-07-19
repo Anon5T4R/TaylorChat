@@ -66,6 +66,14 @@ export default function App() {
     api.setBadge(total).catch(() => {});
   }, [unread]);
 
+  // Espelha a conversa aberta no back, que precisa dela pra decidir se notifica. Fica
+  // num efeito sobre `selected` (e não dentro do handleSelect) porque a seleção também
+  // muda por outros caminhos — apagar um contato, clicar na notificação — e todos
+  // precisam chegar aqui. O foco da janela o back lê sozinho.
+  useEffect(() => {
+    api.setActiveConvo(selected).catch(() => {});
+  }, [selected]);
+
   const changeLang = (l: Lang) => {
     setI18nLang(l);
     setLangState(l);
@@ -330,6 +338,25 @@ export default function App() {
     },
     [loadMessages, loadKw, loadReactions, flushQueue],
   );
+
+  // Clique na notificação: o SO reativa o app e o back diz qual conversa abrir. Efeito
+  // separado (e não junto do bloco de listeners lá em cima) só porque depende do
+  // handleSelect, que é definido aqui — evita ler a const antes da hora.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let dead = false;
+    api
+      .onOpenConvo((convo) => handleSelect(convo))
+      .then((fn) => {
+        if (dead) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      dead = true;
+      unlisten?.();
+    };
+  }, [handleSelect]);
 
   const handleSend = useCallback(
     async (body: string, replyTo?: number | null, replyPreview?: string | null) => {

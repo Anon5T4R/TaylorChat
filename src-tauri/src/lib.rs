@@ -4,6 +4,7 @@ mod identity;
 mod llm;
 mod media;
 mod net;
+mod notify;
 mod pairing;
 #[cfg(feature = "p2p")]
 mod ratchet;
@@ -18,21 +19,67 @@ use db::{Db, Message};
 use identity::Identity;
 use tauri_plugin_notification::NotificationExt;
 
-/// Notificação de desktop pra mensagem recebida — só quando a janela NÃO está focada
-/// (senão o usuário já está vendo). Chamada pela camada de rede ao receber. `node` é o
-/// node_id puro; o título vira o nome do contato. Best-effort: nunca estoura.
-pub fn notify_incoming(app: &tauri::AppHandle, node: &str, preview: &str) {
+/// Estado de notificação que só existe em memória: qual conversa está aberta na UI
+/// (empurrada pelo front a cada troca) e qual foi a última que gerou aviso.
+///
+/// A conversa aberta NÃO vem do banco de propósito: é estado de sessão, e persistir isso
+/// faria o app "lembrar" de uma conversa aberta que não está mais na tela depois de um
+/// reinício — calando a notificação certa pelo motivo errado.
+#[derive(Default)]
+pub struct NotifyState {
+    /// Conversa aberta na UI agora (`node` ou `node#thread`), ou None.
+    active: Mutex<Option<String>>,
+    /// Conversa do último aviso mostrado — é o alvo do clique na notificação.
+    last: Mutex<Option<String>>,
+}
+
+/// Notificações ligadas? Preferência do USUÁRIO, guardada no app (default: ligado).
+///
+/// Não perguntamos ao SO. O `permission_state()` do tauri-plugin-notification devolve
+/// `Granted` fixo no desktop (não consulta nada), então tratar isso como preferência
+/// seria adotar uma resposta inventada — é a mesma armadilha do autostart, onde o estado
+/// do SO não é a fonte da verdade da intenção do usuário. A intenção mora aqui.
+fn notify_enabled(db: &Db) -> bool {
+    db::meta_get(db, "notify_enabled")
+        .ok()
+        .flatten()
+        .map(|b| b.as_slice() != b"0")
+        .unwrap_or(true)
+}
+
+/// Notificação de desktop pra mensagem recebida. Chamada pela camada de rede ao receber.
+/// `node` é o node_id puro (identifica o CONTATO — é por ele que o mudo é gravado);
+/// `convo` é a chave da conversa (`node` ou `node#thread`) — é por ela que se compara com
+/// a conversa aberta, senão duas threads do mesmo contato se calariam uma à outra.
+/// Best-effort: nunca estoura.
+pub fn notify_incoming(app: &tauri::AppHandle, node: &str, convo: &str, preview: &str) {
     let focused = app
         .get_webview_window("main")
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
-    if focused {
+    let state = app.state::<Db>();
+    let ns = app.state::<NotifyState>();
+    let active = ns.active.lock().ok().and_then(|g| g.clone());
+
+    let decision = notify::should_notify(notify::NotifyInput {
+        enabled: notify_enabled(&state),
+        focused,
+        active_convo: active.as_deref(),
+        incoming_convo: convo,
+        muted: db::is_muted(&state, node),
+    });
+    if let notify::NotifyDecision::Skip(reason) = decision {
+        // Loga só o que o usuário pode querer desfazer (desligado/mudo) — é o que
+        // responde "por que não apitou?" sem adivinhar qual regra mordeu.
+        // `AlreadyWatching` fica de fora de propósito: é o caso COMUM (conversa aberta
+        // na frente), e uma linha por mensagem varreria o log de rede, que guarda só as
+        // últimas 200 — afogaria justamente o diagnóstico de rede que o painel serve.
+        if reason != notify::SkipReason::AlreadyWatching {
+            net::report(app, format!("notificação suprimida ({reason:?})"), false);
+        }
         return;
     }
-    let state = app.state::<Db>();
-    if db::is_muted(&state, node) {
-        return; // contato silenciado — sem notificação (mas o não-lido segue contando)
-    }
+
     let title = db::contact_name(&state, node);
     // Prévia do conteúdo é opcional (Configurações): quem não quer vazar o texto numa
     // tela compartilhada vê só "quem", não "o quê". Default: mostra (ausente = ligado).
@@ -42,6 +89,14 @@ pub fn notify_incoming(app: &tauri::AppHandle, node: &str, preview: &str) {
         .map(|b| b.as_slice() != b"0")
         .unwrap_or(true);
     let body = if show_preview { preview } else { "💬" };
+    // Guarda o alvo ANTES de mostrar: o clique no toast relança o exe, e o
+    // single-instance (abaixo) lê isso pra abrir a conversa certa.
+    if let Ok(mut g) = ns.last.lock() {
+        *g = Some(convo.to_string());
+    }
+    // `show()` sempre devolve Ok: o plugin dispara o toast numa task e engole o erro
+    // (desktop.rs), então NÃO dá pra saber daqui se o aviso apareceu. Por isso a UI não
+    // promete que funcionou — ver `settings.notifyOsHint`.
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
@@ -432,6 +487,35 @@ fn set_notify_preview(db: tauri::State<'_, Db>, on: bool) -> Result<(), String> 
     db::meta_set(&db, "notify_preview", if on { b"1" } else { b"0" })
 }
 
+/// Chave geral das notificações de desktop (default: ligado).
+#[tauri::command(async)]
+fn get_notify_enabled(db: tauri::State<'_, Db>) -> bool {
+    notify_enabled(&db)
+}
+
+#[tauri::command(async)]
+fn set_notify_enabled(db: tauri::State<'_, Db>, on: bool) -> Result<(), String> {
+    db::meta_set(&db, "notify_enabled", if on { b"1" } else { b"0" })
+}
+
+/// O front avisa qual conversa está aberta (ou None ao fechar/voltar pra lista). É a
+/// segunda metade do "não avise o que já estou vendo" — a primeira (foco da janela) o
+/// back lê sozinho, porque foco muda sem passar pela UI.
+///
+/// Abrir a conversa também limpa o alvo pendente do clique: se o usuário já chegou lá
+/// por conta própria, o relançamento seguinte não deve arrastá-lo de volta.
+#[tauri::command(async)]
+fn set_active_convo(ns: tauri::State<'_, NotifyState>, convo: Option<String>) {
+    if let Ok(mut g) = ns.active.lock() {
+        *g = convo.clone();
+    }
+    if let Ok(mut g) = ns.last.lock() {
+        if g.as_deref() == convo.as_deref() {
+            *g = None;
+        }
+    }
+}
+
 /// Começa a observar a presença do par (conexão quente + heartbeat ping/pong) e devolve
 /// o status agora. Daí em diante a UI recebe o evento `presence` a cada mudança —
 /// online/offline em tempo real, sem chute.
@@ -482,13 +566,30 @@ fn sticker_add(app: tauri::AppHandle, pack: String, src: String) -> Result<Strin
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Um 2º lançamento do exe cai aqui em vez de abrir outra janela. Duas coisas
+        // chegam por este caminho: o usuário clicando no atalho com o app já rodando e —
+        // o que nos interessa — o CLIQUE NA NOTIFICAÇÃO, que no Windows reativa o app
+        // pelo AppUserModelID (ou seja, relança o exe). O plugin de notificação não
+        // oferece callback de clique no desktop (só 3 comandos: notify, request_permission,
+        // is_permission_granted), então este é o único gancho disponível.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             open_main(app);
+            // Se havia um aviso pendente, pula pra conversa dele. Só dispara uma vez: o
+            // alvo é consumido aqui e some quando o usuário abre a conversa sozinho —
+            // assim abrir o app pelo atalho não arrasta ninguém pra lugar nenhum.
+            let target = app
+                .try_state::<NotifyState>()
+                .and_then(|ns| ns.last.lock().ok().and_then(|mut g| g.take()));
+            if let Some(convo) = target {
+                use tauri::Emitter;
+                let _ = app.emit("open-convo", convo);
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Db::default())
+        .manage(NotifyState::default())
         .manage(Mutex::new(llm::LlmState::default()))
         .setup(|app| {
             // Identidade: gera no 1º uso, guarda no cofre do SO.
@@ -564,6 +665,9 @@ pub fn run() {
             peer_unwatch,
             get_notify_preview,
             set_notify_preview,
+            get_notify_enabled,
+            set_notify_enabled,
+            set_active_convo,
             set_badge,
             db::unread_list,
             db::unread_set,

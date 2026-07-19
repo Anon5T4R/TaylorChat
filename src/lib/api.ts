@@ -155,6 +155,17 @@ export const netLog = () => invoke<string[]>("net_log");
 /// Notificação de desktop mostra a prévia do texto? (default: sim)
 export const getNotifyPreview = () => invoke<boolean>("get_notify_preview");
 export const setNotifyPreview = (on: boolean) => invoke<void>("set_notify_preview", { on });
+/// Chave geral das notificações de desktop (default: ligado). A preferência mora no app,
+/// não no SO — o plugin responde "permitido" fixo no desktop, então perguntar não informa.
+export const getNotifyEnabled = () => invoke<boolean>("get_notify_enabled");
+export const setNotifyEnabled = (on: boolean) => invoke<void>("set_notify_enabled", { on });
+/// Diz ao back qual conversa está aberta, pra ele não notificar o que já está na tela.
+/// `null` = nenhuma (lista/tela inicial).
+export const setActiveConvo = (convo: string | null) =>
+  invoke<void>("set_active_convo", { convo });
+/// Clique na notificação: o SO reativa o app e o back manda abrir esta conversa.
+export const onOpenConvo = (cb: (convo: string) => void): Promise<UnlistenFn> =>
+  listen<string>("open-convo", (e) => cb(e.payload));
 /// Começa a observar a presença do par (conexão quente + heartbeat) e devolve o status
 /// agora. Depois disso, escute `onPresence` pra atualizações em tempo real.
 export const peerOnline = (peer: string) => invoke<boolean>("peer_online", { peer });

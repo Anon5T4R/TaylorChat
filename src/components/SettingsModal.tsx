@@ -38,6 +38,7 @@ export function SettingsModal({
   const [pName, setPName] = useState("");
   const [pAvatar, setPAvatar] = useState<string | null>(null);
   const [notifyPreview, setNotifyPreview] = useState(true);
+  const [notifyEnabled, setNotifyEnabled] = useState(true);
 
   const refreshProfile = () =>
     api.getProfile().then((p) => {
@@ -71,12 +72,17 @@ export function SettingsModal({
     refreshDiag();
     refreshProfile();
     api.getNotifyPreview().then(setNotifyPreview).catch(() => {});
+    api.getNotifyEnabled().then(setNotifyEnabled).catch(() => {});
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   const changeNotifyPreview = (b: boolean) => {
     setNotifyPreview(b);
     api.setNotifyPreview(b).catch(() => {});
+  };
+  const changeNotifyEnabled = (b: boolean) => {
+    setNotifyEnabled(b);
+    api.setNotifyEnabled(b).catch(() => {});
   };
 
   const runAudit = async () => {
@@ -156,15 +162,35 @@ export function SettingsModal({
 
           <label className="set-row">
             <span>
+              {t("settings.notify")}
+              <small>{t("settings.notifyHint")}</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={notifyEnabled}
+              onChange={(e) => changeNotifyEnabled(e.target.checked)}
+            />
+          </label>
+
+          {/* Prévia só faz sentido com o aviso ligado — desabilita em vez de sumir, pra
+              o usuário ver que a opção existe e por que está fora de alcance. */}
+          <label className="set-row">
+            <span>
               {t("settings.notifyPreview")}
               <small>{t("settings.notifyPreviewHint")}</small>
             </span>
             <input
               type="checkbox"
+              disabled={!notifyEnabled}
               checked={notifyPreview}
               onChange={(e) => changeNotifyPreview(e.target.checked)}
             />
           </label>
+
+          {/* Honestidade: o app não tem como saber se o toast apareceu. O plugin responde
+              "permitido" fixo no desktop e engole o erro do disparo, então prometer que
+              está funcionando seria chute. Dizemos onde olhar se não aparecer. */}
+          {notifyEnabled && <p className="hint">{t("settings.notifyOsHint")}</p>}
 
           <div className="set-audit">
             <strong>{t("settings.audit")}</strong>
