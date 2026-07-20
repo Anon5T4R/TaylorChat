@@ -10,7 +10,7 @@ import {
   type Reaction,
 } from "../lib/api";
 import type { Contact, FileMeta, Message } from "../lib/types";
-import { dayLabel, shortId } from "../lib/ui";
+import { dayLabel, formatSize, linkParts, shortId, stateGlyph } from "../lib/ui";
 import { t } from "../lib/i18n";
 import { StickerPicker } from "./StickerPicker";
 import { Avatar } from "./Avatar";
@@ -24,24 +24,24 @@ const EMOJIS =
     " ",
   );
 
-// URL → link clicável, sem HTML cru (evita XSS). Divide o texto e transforma só as URLs.
+// URL → link clicável, sem HTML cru (evita XSS). A decisão de o que é URL mora em
+// `linkParts` (lib/ui.ts, testada); aqui sobra só o render.
 function renderText(text: string) {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g);
-  return parts.map((p, i) =>
-    /^https?:\/\/\S+$/.test(p) ? (
+  return linkParts(text).map((p, i) =>
+    p.url ? (
       <a
         key={i}
         className="msg-link"
-        href={p}
+        href={p.text}
         onClick={(e) => {
           e.preventDefault();
-          openLink(p);
+          openLink(p.text);
         }}
       >
-        {p}
+        {p.text}
       </a>
     ) : (
-      <span key={i}>{p}</span>
+      <span key={i}>{p.text}</span>
     ),
   );
 }
@@ -70,29 +70,6 @@ interface Props {
   onDeleteMine: (id: number) => void;
   onDeleteEveryone: (ts: number) => void;
   onToggleMute: () => void;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function stateGlyph(m: Message): string {
-  if (m.direction === "in") return "";
-  switch (m.state) {
-    case "queued":
-      return "🕒";
-    case "failed":
-      return "⚠";
-    case "sent":
-      return "✓";
-    case "delivered":
-    case "read":
-      return "✓✓";
-    default:
-      return "";
-  }
 }
 
 function FileBubble({ body }: { body: string }) {

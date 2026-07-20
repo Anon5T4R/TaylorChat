@@ -1,5 +1,6 @@
 // Utilidades visuais compartilhadas (sidebar + conversa).
 import { t } from "./i18n";
+import type { Message } from "./types";
 
 /** Cor estável por contato: hash do node_id → matiz HSL. */
 export function avatarColor(nodeId: string): string {
@@ -39,6 +40,44 @@ export function dayLabel(ts: number): string {
   if (day === today) return t("day.today");
   if (day === today - DAY) return t("day.yesterday");
   return new Date(ts).toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Glifo de estado da bolha. Só mensagem MINHA tem estado — a que chegou não mostra
+ * nada (senão o ✓✓ pareceria confirmação do outro lado).
+ */
+export function stateGlyph(m: Pick<Message, "direction" | "state">): string {
+  if (m.direction === "in") return "";
+  switch (m.state) {
+    case "queued":
+      return "🕒";
+    case "failed":
+      return "⚠";
+    case "sent":
+      return "✓";
+    case "delivered":
+    case "read":
+      return "✓✓";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Quebra o texto em pedaços marcando quais são URL — o passo PURO do link clicável.
+ * Fica aqui (e não no JSX) porque é a parte que erra: quem decide o que vira `<a>`.
+ * O render nunca usa HTML cru, então não há caminho de XSS por aqui.
+ */
+export function linkParts(text: string): { url: boolean; text: string }[] {
+  return text
+    .split(/(https?:\/\/[^\s]+)/g)
+    .map((p) => ({ url: /^https?:\/\/\S+$/.test(p), text: p }));
 }
 
 /** Hora se for hoje; senão data curta — pra sidebar. */

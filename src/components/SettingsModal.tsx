@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
-import { t, type Lang } from "../lib/i18n";
+import { LANG_LABELS, t, type Lang } from "../lib/i18n";
 import type { Theme } from "../lib/types";
 
 interface Props {
@@ -142,9 +142,11 @@ export function SettingsModal({
           <label className="set-row">
             <span>{t("settings.lang")}</span>
             <select value={lang} onChange={(e) => onLang(e.target.value as Lang)}>
-              <option value="pt">Português</option>
-              <option value="es">Español</option>
-              <option value="en">English</option>
+              {(Object.keys(LANG_LABELS) as Lang[]).map((l) => (
+                <option key={l} value={l}>
+                  {LANG_LABELS[l]}
+                </option>
+              ))}
             </select>
           </label>
 

@@ -39,6 +39,11 @@ jobs:
       - name: Install JS deps
         run: npm ci
 
+      - name: Testes do front (vitest)
+        run: npm test
+
+      # O `tsc` do build é quem impõe a paridade do i18n: `es`/`en` são
+      # `Record<MessageKey, string>`, então chave faltando aqui é erro de compilação.
       - name: Frontend build
         run: npm run build
 
