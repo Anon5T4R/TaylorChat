@@ -139,6 +139,51 @@ const pt = {
   "settings.diagDown": "Rede fora do ar",
   "settings.diagCopy": "Copiar log",
   "settings.close": "Fechar",
+
+  "storage.section": "Dados e armazenamento",
+  "storage.path": "Pasta de dados",
+  "storage.open": "Abrir",
+  "storage.db": "Histórico (banco)",
+  "storage.dbCounts": "{n} mensagens · {f} com anexo · {c} contatos · {v} conversas",
+  "storage.dbHint":
+    "as mensagens, os contatos e as conversas — nenhuma limpeza desta tela apaga isso. Numa conversa ponto a ponto não há servidor pra rebaixar nada: o que sai daqui sai do mundo.",
+  "storage.attachments": "Anexos recebidos e enviados",
+  "storage.attachmentsCounts": "{n} arquivos · {orphans} órfãos ({orphanSize})",
+  "storage.clearOrphan": "Limpar anexos órfãos",
+  "storage.clearOrphanHint":
+    "apaga só os arquivos que nenhuma mensagem referencia — sobra de conversa apagada ou contato removido. Todo anexo que ainda aparece numa conversa fica.",
+  "storage.partial": "Transferências interrompidas",
+  "storage.partialCounts": "{n} arquivos parciais",
+  "storage.clearPartialHint":
+    "pedaços de anexos que não terminaram de chegar. Eles servem pra retomar de onde parou, então limpe só quando não houver transferência em andamento. Nenhuma mensagem é afetada.",
+  "storage.avatars": "Fotos de contatos (cache)",
+  "storage.avatarsCounts": "{n} arquivos · {orphans} de contatos removidos ({orphanSize})",
+  "storage.clearAvatarsHint":
+    "apaga só as fotos de quem não está mais nos seus contatos. A foto de contato ativo fica, e a sua também.",
+  "storage.backups": "Backups do banco",
+  "storage.backupsCounts": "{n} cópias · {old} antigas ({oldSize})",
+  "storage.clearBackupsHint":
+    "cópia diária do histórico. Apaga as antigas e SEMPRE mantém a mais recente — você nunca fica sem rede de proteção.",
+  "storage.stickers": "Figurinhas",
+  "storage.stickersCounts": "{n} arquivos",
+  "storage.stickersHint": "conteúdo que você escolheu — nenhum botão desta tela apaga figurinha.",
+  "storage.clear": "Limpar",
+  "storage.confirmTitle": "Confirmar limpeza",
+  "storage.confirmOrphan":
+    "Apagar os anexos que nenhuma mensagem referencia? As conversas e os anexos em uso ficam.",
+  "storage.confirmPartial":
+    "Apagar os pedaços de transferências não terminadas? Uma transferência em andamento vai recomeçar do zero. Nenhuma mensagem é apagada.",
+  "storage.confirmAvatars":
+    "Apagar as fotos em cache de contatos removidos? As fotos dos seus contatos atuais ficam.",
+  "storage.confirmBackups":
+    "Apagar os backups antigos do banco? O mais recente fica, e o histórico atual não é tocado.",
+  "storage.confirmYes": "Sim, apagar",
+  "storage.cancel": "Cancelar",
+  "storage.freed": "Liberado {size} ({n} arquivos).",
+  "storage.nothing": "Nada pra limpar aqui.",
+  "storage.failed": "Falha na limpeza: {e}",
+  "storage.loadFailed": "Não consegui medir o armazenamento: {e}",
+
   "common.on": "Ligado",
   "common.off": "Desligado",
   "ai.title": "✦ IA local",
@@ -283,6 +328,52 @@ const es: Record<MessageKey, string> = {
   "settings.diagDown": "Red caída",
   "settings.diagCopy": "Copiar registro",
   "settings.close": "Cerrar",
+
+  "storage.section": "Datos y almacenamiento",
+  "storage.path": "Carpeta de datos",
+  "storage.open": "Abrir",
+  "storage.db": "Historial (base de datos)",
+  "storage.dbCounts": "{n} mensajes · {f} con adjunto · {c} contactos · {v} conversaciones",
+  "storage.dbHint":
+    "los mensajes, los contactos y las conversaciones — ninguna limpieza de esta pantalla los borra. En una conversación punto a punto no hay servidor que reponga nada: lo que sale de aquí desaparece.",
+  "storage.attachments": "Adjuntos recibidos y enviados",
+  "storage.attachmentsCounts": "{n} archivos · {orphans} huérfanos ({orphanSize})",
+  "storage.clearOrphan": "Limpiar adjuntos huérfanos",
+  "storage.clearOrphanHint":
+    "borra solo los archivos que ningún mensaje referencia — restos de conversaciones borradas o contactos eliminados. Todo adjunto que aún aparece en una conversación se queda.",
+  "storage.partial": "Transferencias interrumpidas",
+  "storage.partialCounts": "{n} archivos parciales",
+  "storage.clearPartialHint":
+    "trozos de adjuntos que no terminaron de llegar. Sirven para reanudar donde se cortó, así que limpia solo cuando no haya transferencias en curso. Ningún mensaje se ve afectado.",
+  "storage.avatars": "Fotos de contactos (caché)",
+  "storage.avatarsCounts": "{n} archivos · {orphans} de contactos eliminados ({orphanSize})",
+  "storage.clearAvatarsHint":
+    "borra solo las fotos de quien ya no está en tus contactos. La foto de un contacto activo se queda, y la tuya también.",
+  "storage.backups": "Copias de seguridad",
+  "storage.backupsCounts": "{n} copias · {old} antiguas ({oldSize})",
+  "storage.clearBackupsHint":
+    "copia diaria del historial. Borra las antiguas y SIEMPRE conserva la más reciente — nunca te quedas sin red de seguridad.",
+  "storage.stickers": "Stickers",
+  "storage.stickersCounts": "{n} archivos",
+  "storage.stickersHint":
+    "contenido que tú elegiste — ningún botón de esta pantalla borra stickers.",
+  "storage.clear": "Limpiar",
+  "storage.confirmTitle": "Confirmar limpieza",
+  "storage.confirmOrphan":
+    "¿Borrar los adjuntos que ningún mensaje referencia? Las conversaciones y los adjuntos en uso se quedan.",
+  "storage.confirmPartial":
+    "¿Borrar los trozos de transferencias sin terminar? Una transferencia en curso volverá a empezar desde cero. No se borra ningún mensaje.",
+  "storage.confirmAvatars":
+    "¿Borrar las fotos en caché de contactos eliminados? Las fotos de tus contactos actuales se quedan.",
+  "storage.confirmBackups":
+    "¿Borrar las copias de seguridad antiguas? La más reciente se queda, y el historial actual no se toca.",
+  "storage.confirmYes": "Sí, borrar",
+  "storage.cancel": "Cancelar",
+  "storage.freed": "Liberado {size} ({n} archivos).",
+  "storage.nothing": "Nada que limpiar aquí.",
+  "storage.failed": "Error en la limpieza: {e}",
+  "storage.loadFailed": "No pude medir el almacenamiento: {e}",
+
   "common.on": "Activado",
   "common.off": "Desactivado",
   "ai.title": "✦ IA local",
@@ -424,6 +515,51 @@ const en: Record<MessageKey, string> = {
   "settings.diagDown": "Network down",
   "settings.diagCopy": "Copy log",
   "settings.close": "Close",
+
+  "storage.section": "Data and storage",
+  "storage.path": "Data folder",
+  "storage.open": "Open",
+  "storage.db": "History (database)",
+  "storage.dbCounts": "{n} messages · {f} with an attachment · {c} contacts · {v} conversations",
+  "storage.dbHint":
+    "the messages, contacts and conversations — no cleanup on this screen deletes any of it. A peer-to-peer chat has no server to fetch anything back from: what leaves here leaves the world.",
+  "storage.attachments": "Attachments sent and received",
+  "storage.attachmentsCounts": "{n} files · {orphans} orphaned ({orphanSize})",
+  "storage.clearOrphan": "Clear orphaned attachments",
+  "storage.clearOrphanHint":
+    "deletes only files no message references — leftovers from cleared conversations or removed contacts. Every attachment still shown in a conversation stays.",
+  "storage.partial": "Interrupted transfers",
+  "storage.partialCounts": "{n} partial files",
+  "storage.clearPartialHint":
+    "chunks of attachments that never finished arriving. They exist so a transfer can resume where it stopped, so clear them only when nothing is transferring. No message is affected.",
+  "storage.avatars": "Contact photos (cache)",
+  "storage.avatarsCounts": "{n} files · {orphans} from removed contacts ({orphanSize})",
+  "storage.clearAvatarsHint":
+    "deletes only photos of people no longer in your contacts. An active contact's photo stays, and so does yours.",
+  "storage.backups": "Database backups",
+  "storage.backupsCounts": "{n} copies · {old} old ({oldSize})",
+  "storage.clearBackupsHint":
+    "daily copy of your history. Deletes the old ones and ALWAYS keeps the most recent — you are never left without a safety net.",
+  "storage.stickers": "Stickers",
+  "storage.stickersCounts": "{n} files",
+  "storage.stickersHint": "content you chose yourself — no button on this screen deletes a sticker.",
+  "storage.clear": "Clear",
+  "storage.confirmTitle": "Confirm cleanup",
+  "storage.confirmOrphan":
+    "Delete the attachments no message references? Conversations and attachments in use are kept.",
+  "storage.confirmPartial":
+    "Delete the chunks of unfinished transfers? A transfer in progress will start over from scratch. No message is deleted.",
+  "storage.confirmAvatars":
+    "Delete the cached photos of removed contacts? Photos of your current contacts are kept.",
+  "storage.confirmBackups":
+    "Delete the old database backups? The most recent one stays, and your current history is untouched.",
+  "storage.confirmYes": "Yes, delete",
+  "storage.cancel": "Cancel",
+  "storage.freed": "Freed {size} ({n} files).",
+  "storage.nothing": "Nothing to clean up here.",
+  "storage.failed": "Cleanup failed: {e}",
+  "storage.loadFailed": "Could not measure storage: {e}",
+
   "common.on": "On",
   "common.off": "Off",
   "ai.title": "✦ Local AI",
@@ -492,6 +628,15 @@ export function setLang(l: Lang) {
 
 /// O fallback pro `pt` sobrevive por segurança em runtime, mas com o dicionário tipado
 /// ele virou inalcançável na prática: chave que não existe no `pt` nem compila.
-export function t(key: MessageKey): string {
-  return DICTS[current][key] ?? pt[key] ?? key;
+///
+/// `params` interpola `{nome}` (o painel de armazenamento precisa: "12 arquivos ·
+/// 3 órfãos (4,2 MB)"). Split/join em vez de regex porque o valor pode conter
+/// `$` (caminho do Windows, mensagem de erro) e `replace` daria significado
+/// especial a ele.
+export function t(key: MessageKey, params?: Record<string, string | number>): string {
+  const raw = DICTS[current][key] ?? pt[key] ?? key;
+  if (!params) return raw;
+  let out = raw;
+  for (const [k, v] of Object.entries(params)) out = out.split(`{${k}}`).join(String(v));
+  return out;
 }

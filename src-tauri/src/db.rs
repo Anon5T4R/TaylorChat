@@ -1129,6 +1129,57 @@ pub fn conversations_summary(db: State<'_, Db>) -> Result<Vec<ConvoSummary>, Str
         .collect())
 }
 
+/// Corpos das mensagens de anexo, decifrados **em modo estrito**.
+///
+/// `Ok(None)` numa posição significa "esta linha existe mas não deu pra ler". O
+/// `dec_text` normal devolve um marcador nesse caso, e usar ele aqui seria um
+/// desastre: uma linha ilegível viraria "não referencia anexo nenhum" e o
+/// arquivo vivo dela entraria na lista de órfãos. Quem chama decide (e a
+/// varredura de armazenamento ABORTA).
+pub fn file_message_bodies(db: &Db) -> Result<Vec<Option<String>>, String> {
+    let key = key_of(db)?;
+    let blobs: Vec<Vec<u8>> = with_conn!(db, conn, {
+        let mut stmt = conn
+            .prepare("SELECT body FROM messages WHERE kind='file'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    });
+    Ok(blobs
+        .iter()
+        .map(|b| {
+            crate::crypto::decrypt(&key, b)
+                .ok()
+                .map(|pt| String::from_utf8_lossy(&pt).to_string())
+        })
+        .collect())
+}
+
+/// Contagens do painel de armazenamento (mensagens, anexos, contatos, conversas).
+pub fn storage_counts(db: &Db) -> Result<(i64, i64, i64, i64), String> {
+    with_conn!(db, conn, {
+        let one = |sql: &str| -> Result<i64, String> {
+            conn.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())
+        };
+        Ok((
+            one("SELECT COUNT(*) FROM messages")?,
+            one("SELECT COUNT(*) FROM messages WHERE kind='file'")?,
+            one("SELECT COUNT(*) FROM contacts")?,
+            one("SELECT COUNT(DISTINCT peer) FROM messages")?,
+        ))
+    })
+}
+
+/// node_ids de todos os contatos (a varredura de avatares monta o nome de
+/// arquivo esperado a partir daqui, sem depender do caminho gravado na coluna).
+pub fn contact_node_ids(db: &Db) -> Result<Vec<String>, String> {
+    with_conn!(db, conn, {
+        let mut stmt = conn.prepare("SELECT node_id FROM contacts").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
 /// Conversas que têm alguma mensagem na fila (pra reenvio geral, todas de uma vez).
 pub fn queued_convos(db: &Db) -> Result<Vec<String>, String> {
     with_conn!(db, conn, {

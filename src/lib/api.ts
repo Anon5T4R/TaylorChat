@@ -246,3 +246,39 @@ export interface LlmStatus {
   model: string;
 }
 export const llmStatus = () => invoke<LlmStatus>("llm_status");
+
+// ── Dados e armazenamento (B11) ──────────────────────────────────────────
+export interface StorageInfo {
+  dir: string;
+  dbBytes: number;
+  messages: number;
+  fileMessages: number;
+  contacts: number;
+  conversations: number;
+  attachmentsBytes: number;
+  attachmentsFiles: number;
+  orphanAttachmentsBytes: number;
+  orphanAttachmentsFiles: number;
+  partialBytes: number;
+  partialFiles: number;
+  avatarsBytes: number;
+  avatarsFiles: number;
+  orphanAvatarsBytes: number;
+  orphanAvatarsFiles: number;
+  backupsBytes: number;
+  backupsFiles: number;
+  oldBackupsBytes: number;
+  oldBackupsFiles: number;
+  stickersBytes: number;
+  stickersFiles: number;
+}
+export interface Freed {
+  files: number;
+  bytes: number;
+}
+export const storageInfo = () => invoke<StorageInfo>("storage_info");
+export const storageClearOrphanAttachments = () =>
+  invoke<Freed>("storage_clear_orphan_attachments");
+export const storageClearPartials = () => invoke<Freed>("storage_clear_partials");
+export const storageClearOrphanAvatars = () => invoke<Freed>("storage_clear_orphan_avatars");
+export const storageClearOldBackups = () => invoke<Freed>("storage_clear_old_backups");

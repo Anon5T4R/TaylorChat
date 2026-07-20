@@ -8,6 +8,7 @@ mod notify;
 mod pairing;
 #[cfg(feature = "p2p")]
 mod ratchet;
+mod storage;
 
 use std::sync::Mutex;
 use base64::Engine;
@@ -694,6 +695,11 @@ pub fn run() {
             db::threads_list,
             db::thread_create,
             db::thread_delete,
+            storage::storage_info,
+            storage::storage_clear_orphan_attachments,
+            storage::storage_clear_partials,
+            storage::storage_clear_orphan_avatars,
+            storage::storage_clear_old_backups,
             llm::list_models,
             llm::start_llm,
             llm::stop_llm,
