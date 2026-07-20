@@ -1139,8 +1139,12 @@ pub fn conversations_summary(db: State<'_, Db>) -> Result<Vec<ConvoSummary>, Str
 pub fn file_message_bodies(db: &Db) -> Result<Vec<Option<String>>, String> {
     let key = key_of(db)?;
     let blobs: Vec<Vec<u8>> = with_conn!(db, conn, {
+        // `deleted=0` de propósito: "apagar para todos" faz soft-delete — mantém
+        // a linha e o `kind='file'`, mas ESVAZIA o corpo. Uma mensagem apagada
+        // não referencia anexo nenhum (e o arquivo dela é justamente o que a
+        // limpeza deve poder recuperar), então ela nem entra na varredura.
         let mut stmt = conn
-            .prepare("SELECT body FROM messages WHERE kind='file'")
+            .prepare("SELECT body FROM messages WHERE kind='file' AND deleted=0")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?

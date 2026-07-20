@@ -116,6 +116,13 @@ pub fn referenced_names(bodies: &[Option<String>]) -> Result<HashSet<String>, St
                 bodies.len()
             ));
         };
+        // Corpo VAZIO é um estado legítimo, não corrupção: o soft-delete grava
+        // string vazia. A varredura já filtra `deleted=0`, mas tratar o vazio
+        // como erro aqui deixaria o painel inteiro morto por uma linha antiga —
+        // e "cancelei tudo" é caro demais pra cobrar de um caso normal.
+        if json.trim().is_empty() {
+            continue;
+        }
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|e| format!("anexo #{i} com metadados ilegíveis ({e}); limpeza cancelada"))?;
         // Sem `localPath` não há arquivo local a proteger (nada a fazer aqui);
@@ -434,6 +441,19 @@ mod tests {
         let corpo = Some(r#"{"filename":"x.png","mime":"image/png","size":1}"#.to_string());
         assert!(referenced_names(&[corpo]).unwrap().is_empty());
         assert!(referenced_names(&[meta("")]).unwrap().is_empty());
+    }
+
+    /// "Apagar para todos" faz soft-delete: mantém a linha e o `kind='file'`,
+    /// mas grava corpo VAZIO. Se o vazio contasse como metadado ilegível, o
+    /// painel inteiro morreria pra quem já usou o recurso uma vez — e o
+    /// caminho normal do app viraria um erro permanente.
+    #[test]
+    fn mensagem_apagada_nao_derruba_a_varredura() {
+        let usados = referenced_names(&[meta("x/1_a.png"), Some(String::new())]).unwrap();
+        assert_eq!(usados.len(), 1, "o anexo vivo continua protegido");
+        assert!(usados.contains("1_a.png"));
+        // Só espaço em branco também é vazio.
+        assert!(referenced_names(&[Some("   ".into())]).unwrap().is_empty());
     }
 
     #[test]
