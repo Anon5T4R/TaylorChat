@@ -6514,6 +6514,7 @@ dependencies = [
  "chacha20poly1305",
  "data-encoding",
  "ed25519-dalek",
+ "gtk",
  "hkdf",
  "image",
  "iroh",
