@@ -40,6 +40,7 @@ pub struct NotifyState {
 /// `Granted` fixo no desktop (não consulta nada), então tratar isso como preferência
 /// seria adotar uma resposta inventada — é a mesma armadilha do autostart, onde o estado
 /// do SO não é a fonte da verdade da intenção do usuário. A intenção mora aqui.
+
 fn notify_enabled(db: &Db) -> bool {
     db::meta_get(db, "notify_enabled")
         .ok()
@@ -587,21 +588,6 @@ pub fn run() {
     // que sobrou lib de host em algum AppDir, que é onde se deve olhar.
 
     tauri::Builder::default()
-        .on_window_event(|window, event| {
-            // Bug do tao <= 0.35 no GNOME/Wayland: botões da titlebar (min/
-            // max/fechar) mortos até um resize (tauri#13440, tauri#11856). O
-            // toggle de `resizable` em cada foco força o GTK a revalidar as
-            // decorações, restaurando o estado original em seguida. Remover
-            // quando o tauri puxar o tao 0.36 (via wry 0.56).
-            #[cfg(target_os = "linux")]
-            if let tauri::WindowEvent::Focused(true) = event {
-                let r = window.is_resizable().unwrap_or(true);
-                let _ = window.set_resizable(!r);
-                let _ = window.set_resizable(r);
-            }
-            #[cfg(not(target_os = "linux"))]
-            let _ = (window, event);
-        })
         // Um 2º lançamento do exe cai aqui em vez de abrir outra janela. Duas coisas
         // chegam por este caminho: o usuário clicando no atalho com o app já rodando e —
         // o que nos interessa — o CLIQUE NA NOTIFICAÇÃO, que no Windows reativa o app
@@ -628,6 +614,11 @@ pub fn run() {
         .manage(NotifyState::default())
         .manage(Mutex::new(llm::LlmState::default()))
         .setup(|app| {
+        // Titlebar limpa no GNOME/Wayland (tao <= 0.35) — ver lib.rs do LocalImage.
+        #[cfg(target_os = "linux")]
+        if let Some(w) = app.get_webview_window("main") {
+            instalar_csd_limpa(&w);
+        }
             // Identidade: gera no 1º uso, guarda no cofre do SO.
             let id = Identity::load_or_create().map_err(|e| {
                 eprintln!("[taylorchat] falha na identidade: {e}");
@@ -757,4 +748,20 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Contorna a titlebar quebrada do tao <= 0.35 no GNOME/Wayland (CSD propia
+/// com regiao de input morta — causa e fix em tao#1218, so via tauri 2.12):
+/// troca por uma HeaderBar comum com layout forcado min/max/fechar, ANTES do
+/// primeiro map. Sai junto com o upgrade ao tao 0.36 (wry 0.56).
+#[cfg(target_os = "linux")]
+fn instalar_csd_limpa(w: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gw) = w.gtk_window() else { return };
+    let header = gtk::HeaderBar::new();
+    header.set_show_close_button(true);
+    header.set_decoration_layout(Some("menu:minimize,maximize,close"));
+    header.set_title(Some("TaylorChat"));
+    header.show();
+    gw.set_titlebar(Some(&header));
 }
